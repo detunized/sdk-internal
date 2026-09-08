@@ -60,7 +60,9 @@ impl SignInAddress {
         Ok(SignInAddress { subdomain, domain })
     }
 
-    /// The domain half of the address.
+    /// The domain half of the address. Read by the out-of-tree CLI, which prints where an import
+    /// would sign in.
+    #[allow(dead_code)]
     pub fn domain(&self) -> SignInDomain {
         self.domain
     }

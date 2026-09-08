@@ -16,8 +16,8 @@ license = "GPL-3.0-only OR LicenseRef-Bitwarden-SDK"
 keywords.workspace = true
 
 [features]
-# Re-exports the 1Password access module so the out-of-tree CLI can drive it against a real
-# account. Never enable in production builds.
+# Re-exports the 1Password access and convert modules so the out-of-tree CLI can drive them
+# against a real account. Never enable in production builds.
 # TODO: Remove once the importer consumes the module directly.
 test-utils = []
 uniffi = [
@@ -31,6 +31,7 @@ wasm = [
     "bitwarden-vault/wasm",
     "bitwarden-exporters/wasm",
     "dep:tsify",
+    "dep:bitwarden-threading",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
 ]
@@ -46,6 +47,8 @@ bitwarden-crypto = { workspace = true }
 bitwarden-error = { workspace = true }
 bitwarden-exporters = { workspace = true }
 bitwarden-random = { workspace = true }
+bitwarden-ssh = { workspace = true }
+bitwarden-threading = { workspace = true, optional = true }
 bitwarden-vault = { workspace = true }
 cbc = { workspace = true }
 chrono = { workspace = true, features = ["std"] }

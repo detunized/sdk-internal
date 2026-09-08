@@ -1,9 +1,13 @@
+use std::sync::Arc;
+
 use bitwarden_collections::collection::Collection;
 use bitwarden_exporters::{Account, ExportFormat};
 use bitwarden_generators::{
     PassphraseGeneratorRequest, PasswordGeneratorRequest, UsernameGeneratorRequest,
 };
-use bitwarden_importers::{ImportOptions, ImportSummary};
+use bitwarden_importers::{
+    ImportOptions, ImportSummary, OnePasswordAccount, OnePasswordTotpResult, OnePasswordTwoFactorUi,
+};
 use bitwarden_vault::{Cipher, EncryptionContext, Folder};
 
 use crate::error::Result;
@@ -105,5 +109,42 @@ impl ImporterClient {
             .0
             .import_kdbx(file, password, key_file, options)
             .await?)
+    }
+
+    /// Import a 1Password account directly from the 1Password servers.
+    ///
+    /// Signs in, prompts `two_factor` when the account asks for a code, downloads every vault the
+    /// account can open, and submits the result. Each vault becomes a folder.
+    pub async fn import_onepassword(
+        &self,
+        account: OnePasswordAccount,
+        two_factor: Arc<dyn OnePasswordTwoFactorPrompt>,
+        options: ImportOptions,
+    ) -> Result<ImportSummary> {
+        let prompt = Arc::new(TwoFactorPromptBridge(two_factor));
+
+        Ok(self.0.import_onepassword(account, prompt, options).await?)
+    }
+}
+
+/// Asks the user for a 1Password two-factor code.
+#[uniffi::export(with_foreign)]
+#[async_trait::async_trait]
+pub trait OnePasswordTwoFactorPrompt: Send + Sync {
+    /// Returns the code the user entered, or `None` if they cancelled. Each rejected code restarts
+    /// the login, so `attempt` grows as the user retries.
+    async fn provide_totp(&self, attempt: u32) -> Option<String>;
+}
+
+/// Adapts the foreign prompt onto the trait the importer drives.
+struct TwoFactorPromptBridge(Arc<dyn OnePasswordTwoFactorPrompt>);
+
+#[async_trait::async_trait]
+impl OnePasswordTwoFactorUi for TwoFactorPromptBridge {
+    async fn provide_totp(&self, attempt: u32) -> OnePasswordTotpResult {
+        match self.0.provide_totp(attempt).await {
+            Some(code) => OnePasswordTotpResult::Code(code),
+            None => OnePasswordTotpResult::Cancel,
+        }
     }
 }

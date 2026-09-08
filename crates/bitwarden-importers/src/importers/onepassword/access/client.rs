@@ -7,7 +7,7 @@ use super::{
     error::OnePasswordError,
     keychain::Keychain,
     login::{self, LoginOutcome},
-    model::{Item, ItemCategory, Vault},
+    model::{Item, ItemCategory, SkippedItem, Vault},
     opdata::Encrypted,
     rest::RestClient,
     session::Session,
@@ -48,19 +48,7 @@ impl Client {
     ) -> Result<Vec<Vault>, OnePasswordError> {
         let account_key = AccountKey::parse(&credentials.account_key)?;
         let session = self.login(credentials, &account_key, ui).await?;
-        let (keychain, vaults) = unlock(credentials, &account_key, &session).await?;
-
-        let mut downloaded = Vec::with_capacity(vaults.len());
-        for info in &vaults {
-            downloaded.push(Vault {
-                id: info.id.clone(),
-                name: info.name.clone(),
-                description: info.description.clone(),
-                items: download_vault_items(&info.id, &keychain, &session).await?,
-            });
-        }
-
-        Ok(downloaded)
+        download_vaults(credentials, &account_key, &session).await
     }
 
     /// Runs the login sequence, retrying the whole thing when the server rejects a TOTP code.
@@ -106,6 +94,32 @@ impl Client {
 
         Err(OnePasswordError::TwoFactorFailed)
     }
+}
+
+/// Unlocks the account's keys and downloads every vault the session can open.
+///
+/// Split out of [`Client::download_all_vaults`] so the fixture replay can drive the real download
+/// over captured responses without performing the login exchange.
+pub(super) async fn download_vaults(
+    credentials: &Credentials,
+    account_key: &AccountKey,
+    session: &Session,
+) -> Result<Vec<Vault>, OnePasswordError> {
+    let (keychain, vaults) = unlock(credentials, account_key, session).await?;
+
+    let mut downloaded = Vec::with_capacity(vaults.len());
+    for info in &vaults {
+        let (items, skipped) = download_vault_items(&info.id, &keychain, session).await?;
+        downloaded.push(Vault {
+            id: info.id.clone(),
+            name: info.name.clone(),
+            description: info.description.clone(),
+            items,
+            skipped,
+        });
+    }
+
+    Ok(downloaded)
 }
 
 /// A vault the account can open, with its attributes already decrypted.
@@ -164,12 +178,17 @@ async fn unlock(
 }
 
 /// Pages through a vault's items until `batchComplete`, parsing each supported item.
+/// Downloads and decrypts a vault's items, with the ones that could not be read listed separately.
+///
+/// A single unreadable item does not fail the download: an import is worth more when it brings back
+/// everything it can and says what it could not.
 async fn download_vault_items(
     vault_id: &str,
     keychain: &Keychain,
     session: &Session,
-) -> Result<Vec<Item>, OnePasswordError> {
+) -> Result<(Vec<Item>, Vec<SkippedItem>), OnePasswordError> {
     let mut items = Vec::new();
+    let mut skipped = Vec::new();
     let mut batch_id: i64 = 0;
     loop {
         let batch: VaultItemsBatch = session
@@ -184,11 +203,17 @@ async fn download_vault_items(
             if item.trashed == "Y" {
                 continue;
             }
-            items.push(parse_item(&item, keychain)?);
+            match parse_item(&item, keychain) {
+                Ok(parsed) => items.push(parsed),
+                Err(error) => skipped.push(SkippedItem {
+                    id: item.uuid.clone(),
+                    reason: error.to_string(),
+                }),
+            }
         }
 
         if batch.complete {
-            return Ok(items);
+            return Ok((items, skipped));
         }
 
         // The batch id is a cursor, so an unchanged (or rewound) version would refetch the same
@@ -209,6 +234,8 @@ fn parse_item(item: &VaultItem, keychain: &Keychain) -> Result<Item, OnePassword
         category: ItemCategory::from_template_id(&item.template_uuid),
         overview: keychain.decrypt_json(&item.enc_overview)?,
         details: keychain.decrypt_json(&item.enc_details)?,
+        created_at: item.created_at,
+        updated_at: item.updated_at,
     })
 }
 
@@ -295,17 +322,52 @@ mod tests {
         json!({"contentVersion": version, "batchComplete": complete, "items": []})
     }
 
+    /// One item the keychain cannot open costs that item, not the whole account: an import is
+    /// worth more when it brings back the rest and says what it lost.
+    #[tokio::test]
+    async fn an_unreadable_item_is_skipped_rather_than_failing_the_download() {
+        let server = MockServer::start().await;
+        let unreadable = json!({
+            "contentVersion": 1,
+            "batchComplete": true,
+            "items": [{
+                "uuid": "unreadable-item",
+                "templateUuid": "001",
+                "trashed": "N",
+                "encOverview": {
+                    "cty": "b5+jwk+json", "enc": "A256GCM", "kid": "no-such-key",
+                    "iv": "AAAAAAAAAAAAAAAA", "data": "AAAAAAAAAAAAAAAAAAAAAAAA"
+                },
+                "encDetails": {
+                    "cty": "b5+jwk+json", "enc": "A256GCM", "kid": "no-such-key",
+                    "iv": "AAAAAAAAAAAAAAAA", "data": "AAAAAAAAAAAAAAAAAAAAAAAA"
+                }
+            }]
+        });
+        mock_batch(&server, 0, unreadable).await;
+
+        let (items, skipped) = download_vault_items(VAULT_ID, &Keychain::new(), &session(&server))
+            .await
+            .expect("the download survives an item it cannot read");
+
+        assert!(items.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].id, "unreadable-item");
+        assert!(!skipped[0].reason.is_empty());
+    }
+
     #[tokio::test]
     async fn download_pages_until_the_batch_is_complete() {
         let server = MockServer::start().await;
         mock_batch(&server, 0, batch(7, false)).await;
         mock_batch(&server, 7, batch(9, true)).await;
 
-        let items = download_vault_items(VAULT_ID, &Keychain::new(), &session(&server))
+        let (items, skipped) = download_vault_items(VAULT_ID, &Keychain::new(), &session(&server))
             .await
             .expect("pagination advances to the final batch");
 
         assert!(items.is_empty());
+        assert!(skipped.is_empty());
         server.verify().await;
     }
 

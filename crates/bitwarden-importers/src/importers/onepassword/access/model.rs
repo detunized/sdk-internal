@@ -2,23 +2,44 @@
 //!
 //! Mapping these onto Bitwarden ciphers is the importer's job and happens elsewhere.
 
+use chrono::{DateTime, Utc};
+
 use super::wire::{VaultItemDetails, VaultItemOverview};
 
 /// A decrypted vault with its items.
 pub struct Vault {
-    /// The vault's 1Password uuid.
+    /// The vault's 1Password uuid. Kept to identify the source vault in diagnostics; the import
+    /// itself goes by name.
+    #[allow(dead_code)]
     pub id: String,
     /// The vault's display name.
     pub name: String,
-    /// The vault's description, empty when unset.
+    /// The vault's description, empty when unset. Bitwarden folders have no description, so this
+    /// has nowhere to go yet.
+    #[allow(dead_code)]
     pub description: String,
     /// Every item in the vault except the trashed ones.
     pub items: Vec<Item>,
+    /// Items the client could not read. An import brings back what it can rather than failing the
+    /// whole account over one bad item. Nothing surfaces this to the caller yet: `ImportSummary`
+    /// has no place for it.
+    #[allow(dead_code)]
+    pub skipped: Vec<SkippedItem>,
+}
+
+/// An item that could not be decrypted or parsed, kept so a caller can say what it lost.
+#[allow(dead_code)]
+pub struct SkippedItem {
+    /// The item's 1Password uuid.
+    pub id: String,
+    /// Why the item could not be read.
+    pub reason: String,
 }
 
 /// A decrypted item: its identity plus both payloads exactly as 1Password sends them.
 pub struct Item {
-    /// The item's 1Password uuid.
+    /// The item's 1Password uuid. Kept to identify the source item in diagnostics.
+    #[allow(dead_code)]
     pub id: String,
     /// The item's category, derived from its template id.
     pub category: ItemCategory,
@@ -26,6 +47,10 @@ pub struct Item {
     pub overview: VaultItemOverview,
     /// The decrypted `encDetails`: login fields, sections, note, password history.
     pub details: VaultItemDetails,
+    /// When 1Password created the item.
+    pub created_at: Option<DateTime<Utc>>,
+    /// When the item last changed.
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 /// The kind of a vault item, mapped from its template id. The ids are 1Password's standard

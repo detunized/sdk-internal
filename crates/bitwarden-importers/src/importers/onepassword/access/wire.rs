@@ -3,6 +3,7 @@
 //! These carry only the fields the client reads. serde ignores everything else on the wire, so the
 //! structs stay small while remaining forward compatible with the full server responses.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// The JSON "opdata" envelope as it appears on the wire.
@@ -263,6 +264,10 @@ pub(super) struct VaultItem {
     #[serde(rename = "templateUuid")]
     pub template_uuid: String,
     pub trashed: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: Option<DateTime<Utc>>,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: Option<DateTime<Utc>>,
     #[serde(rename = "encOverview")]
     pub enc_overview: EncryptedEnvelope,
     #[serde(rename = "encDetails")]
@@ -273,6 +278,9 @@ pub(super) struct VaultItem {
 #[derive(Deserialize)]
 pub struct VaultItemOverview {
     pub title: Option<String>,
+    /// The subtitle 1Password shows under the title. The import has nowhere to put it; the CLI
+    /// dump prints it.
+    #[allow(dead_code)]
     pub ainfo: Option<String>,
     pub url: Option<String>,
     #[serde(rename = "URLs")]
@@ -283,6 +291,9 @@ pub struct VaultItemOverview {
 /// A URL entry in an item overview.
 #[derive(Deserialize)]
 pub struct VaultItemUrl {
+    /// The address's label. Bitwarden's `LoginUri` has no label, so the import drops it; the CLI
+    /// dump prints it.
+    #[allow(dead_code)]
     #[serde(rename = "l")]
     pub name: Option<String>,
     #[serde(rename = "u")]
@@ -298,11 +309,15 @@ pub struct VaultItemDetails {
     pub sections: Option<Vec<VaultItemSection>>,
     /// The secret of a Password-category item, which carries no `fields`.
     pub password: Option<String>,
+    /// Superseded passwords. `ImportingCipher` cannot carry them, so nothing reads this yet; it
+    /// stays to record that 1Password sends the whole chain.
+    #[allow(dead_code)]
     #[serde(rename = "passwordHistory")]
     pub password_history: Option<Vec<VaultItemPasswordHistory>>,
 }
 
 /// A superseded password and the unix time it was replaced, oldest first.
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct VaultItemPasswordHistory {
     pub value: Option<String>,
@@ -320,12 +335,15 @@ pub struct VaultItemField {
     pub kind: Option<String>,
 }
 
-/// A titled section of fields.
+/// A titled section of fields. Bitwarden custom fields are a flat list, so a section's own id and
+/// title have nowhere to go and only its fields are read.
 #[derive(Deserialize)]
 pub struct VaultItemSection {
     /// The section's stable id, such as `Section_l2bagl3iupehvr7jvrc62mjhee`.
+    #[allow(dead_code)]
     #[serde(rename = "name")]
     pub id: Option<String>,
+    #[allow(dead_code)]
     #[serde(rename = "title")]
     pub name: Option<String>,
     pub fields: Option<Vec<VaultItemSectionField>>,
@@ -344,22 +362,14 @@ pub struct VaultItemSectionField {
     pub kind: Option<String>,
     #[serde(rename = "a")]
     pub attributes: Option<VaultItemFieldAttributes>,
-    /// Keyboard hints for the 1Password UI, of no use to an import.
-    #[serde(rename = "inputTraits")]
-    pub input_traits: Option<VaultItemInputTraits>,
-}
-
-/// How the 1Password UI should present a field's editor.
-#[derive(Debug, Deserialize)]
-pub struct VaultItemInputTraits {
-    pub autocapitalization: Option<String>,
-    pub keyboard: Option<String>,
-    pub correction: Option<String>,
 }
 
 /// Extra attributes on a section field.
 #[derive(Deserialize)]
 pub struct VaultItemFieldAttributes {
+    /// Not a secrecy marker: 1Password's identity template sets it on plain fields such as the
+    /// first name, so the import decides by field kind instead.
+    #[allow(dead_code)]
     pub guarded: Option<String>,
     #[serde(rename = "sshKeyAttributes")]
     pub ssh_key: Option<SshKeyAttributes>,
@@ -373,11 +383,14 @@ pub struct SshKeyAttributes {
     #[serde(rename = "publicKey")]
     pub public_key: Option<String>,
     pub fingerprint: Option<String>,
+    /// Written into the key material itself, so an import that keeps the key keeps the type.
+    #[allow(dead_code)]
     #[serde(rename = "keyType")]
     pub key_type: Option<SshKeyType>,
 }
 
 /// An SSH key's type and, for RSA, its bit length.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct SshKeyType {
     #[serde(rename = "t")]
