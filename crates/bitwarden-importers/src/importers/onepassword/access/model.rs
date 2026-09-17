@@ -4,6 +4,14 @@
 
 use super::wire::{VaultItemDetails, VaultItemOverview};
 
+/// Everything recovered from an account, including source data that could not be read.
+pub struct DownloadedAccount {
+    /// Vaults that were opened, possibly with individual skipped items.
+    pub vaults: Vec<Vault>,
+    /// Vaults that could not be opened.
+    pub skipped_vaults: Vec<SkippedVault>,
+}
+
 /// A decrypted vault with its items.
 pub struct Vault {
     /// The vault's 1Password uuid. The import goes by name.
@@ -13,6 +21,42 @@ pub struct Vault {
     pub name: String,
     /// Every item in the vault except the trashed ones.
     pub items: Vec<Item>,
+    /// Non-trashed items whose encrypted payloads could not be read.
+    pub skipped_items: Vec<SkippedItem>,
+}
+
+/// A vault that could not be opened.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct SkippedVault {
+    /// The vault's 1Password uuid.
+    pub id: String,
+    /// The active item count advertised by 1Password, when present.
+    pub item_count: Option<u32>,
+    /// Why the vault could not be opened.
+    pub reason: SkippedReason,
+}
+
+/// An item that could not be read from an otherwise accessible vault.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct SkippedItem {
+    /// The item's 1Password uuid.
+    pub id: String,
+    /// The title, when the overview decrypted before another payload failed.
+    pub name: Option<String>,
+    /// The item's category, available without decrypting its payloads.
+    pub category: ItemCategory,
+    /// Why the item could not be read.
+    pub reason: SkippedReason,
+}
+
+/// A safe, structured reason for leaving source data unimported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+pub enum SkippedReason {
+    /// The account does not have the key or permission required to read the data.
+    NoAccess,
+    /// The source data uses a type or format the importer deliberately does not support.
+    Unsupported,
 }
 
 /// A decrypted item: its identity plus both payloads exactly as 1Password sends them.
@@ -32,6 +76,7 @@ pub struct Item {
 /// category template UUIDs; an unrecognized id is preserved as [`ItemCategory::Unknown`] so nothing
 /// is lost.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ItemCategory {
     /// Template `001`.
     Login,

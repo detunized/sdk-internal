@@ -19,6 +19,7 @@ pub(crate) use importers::keeper;
 pub use importers::onepassword::access::{
     Credentials, SignInAddress, SignInDomain, TotpResult as OnePasswordTotpResult,
     TwoFactorUi as OnePasswordTwoFactorUi,
+    model::{ItemCategory, SkippedItem, SkippedReason, SkippedVault},
 };
 mod pipeline;
 
@@ -107,6 +108,15 @@ pub struct ImportSummary {
     pub ciphers: Vec<CipherTypeCount>,
     pub folders: u32,
     pub collections: u32,
+}
+
+/// Result of a direct 1Password import, including source data that could not be imported.
+#[allow(missing_docs)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct OnePasswordImportSummary {
+    pub imported: ImportSummary,
+    pub skipped_vaults: Vec<SkippedVault>,
+    pub skipped_items: Vec<SkippedItem>,
 }
 
 /// Number of imported ciphers of a given type.

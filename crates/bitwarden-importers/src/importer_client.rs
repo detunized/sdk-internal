@@ -3,7 +3,8 @@ use bitwarden_core::Client;
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    Credentials, ImportError, ImportOptions, ImportSummary, OnePasswordTwoFactorUi,
+    Credentials, ImportError, ImportOptions, ImportSummary, OnePasswordImportSummary,
+    OnePasswordTwoFactorUi,
     import::{import_kdbx, import_onepassword},
 };
 
@@ -43,13 +44,13 @@ impl ImporterClient {
     /// Signs in with the email, master password and Secret Key in `credentials`, asking
     /// `two_factor` for a code when the account requires one, downloads and decrypts every vault
     /// the account can open, and submits the result to the import endpoint. Each vault becomes a
-    /// folder. Returns the counts of what was imported.
+    /// folder. Returns the imported counts plus any vaults or items that could not be imported.
     pub async fn import_onepassword(
         &self,
         credentials: Credentials,
         two_factor: &dyn OnePasswordTwoFactorUi,
         options: ImportOptions,
-    ) -> Result<ImportSummary, ImportError> {
+    ) -> Result<OnePasswordImportSummary, ImportError> {
         import_onepassword(&self.client, credentials, two_factor, options).await
     }
 }
