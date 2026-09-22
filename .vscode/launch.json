@@ -5,9 +5,54 @@
   "version": "0.2.0",
   "configurations": [
     {
+      // The out-of-tree 1Password CLI against a real account. Built from its own checkout next to
+      // this one; breakpoints in bitwarden-importers bind because it is a path dependency.
+      "type": "lldb",
+      "request": "launch",
+      "name": "1Password CLI: convert (real account)",
+      "cargo": {
+        "args": ["build", "--bin=onepassword-cli"],
+        "filter": { "name": "onepassword-cli", "kind": "bin" },
+        "cwd": "${workspaceFolder}/../onepassword-cli"
+      },
+      "args": ["convert"],
+      // The CLI reads config.toml from its working directory; the integrated terminal keeps the
+      // stdin TOTP prompt usable for accounts without a totp_secret.
+      "cwd": "${workspaceFolder}/../onepassword-cli",
+      "terminal": "integrated",
+      "env": { "RUST_BACKTRACE": "1" },
+      "sourceLanguages": ["rust"],
+      // Step Into skips the standard library, the async runtime and chrono, so it lands in our
+      // code. Same filter as onepassword-cli/.vscode/settings.json, which only covers that folder.
+      // It has to run after target creation: CodeLLDB's Rust support installs its own narrower
+      // filter there, which would overwrite an initCommands one.
+      "preRunCommands": [
+        "settings set target.process.thread.step-avoid-regexp ^(_\\$LT\\$|<)*(\\[|&|(std|core|alloc|tokio|hyper|h2|reqwest|futures_util|futures_core|mio|chrono)(::|\\.\\.)|([A-Z]|str|char|bool|u(8|16|32|64|128|size)|i(8|16|32|64|128|size)|f(32|64))(>|( as |\\$u20\\$as\\$u20\\$)(std|core|alloc)(::|\\.\\.)))"
+      ]
+    },
+    {
+      // The converter's unit tests over the captured fixtures: no network, no account. The dev
+      // profile is opt-level 1, so a breakpoint may slide to the next line and a local or two
+      // may show as optimized out. The CLI configuration above is fully unoptimized.
+      "type": "lldb",
+      "request": "launch",
+      "name": "1Password converter tests (fixtures)",
+      "cargo": {
+        "args": ["test", "--no-run", "--package=bitwarden-importers", "--lib", "--all-features"],
+        "filter": { "name": "bitwarden_importers", "kind": "lib" }
+      },
+      "args": ["onepassword::convert", "--nocapture", "--test-threads=1"],
+      "cwd": "${workspaceFolder}",
+      "env": { "RUST_BACKTRACE": "1" },
+      "sourceLanguages": ["rust"],
+      "preRunCommands": [
+        "settings set target.process.thread.step-avoid-regexp ^(_\\$LT\\$|<)*(\\[|&|(std|core|alloc|tokio|hyper|h2|reqwest|futures_util|futures_core|mio|chrono)(::|\\.\\.)|([A-Z]|str|char|bool|u(8|16|32|64|128|size)|i(8|16|32|64|128|size)|f(32|64))(>|( as |\\$u20\\$as\\$u20\\$)(std|core|alloc)(::|\\.\\.)))"
+      ]
+    },
+    {
       "type": "lldb",
       "request": "attach",
-      "name": "Attach to Process...",
+      "name": "Attach to Process (pick from a list)",
       "pid": "${command:pickMyProcess}",
       "sourceLanguages": ["rust"]
     },

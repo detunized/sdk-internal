@@ -22,6 +22,8 @@ pub use importers::onepassword::access::{
     model::{ItemCategory, SkippedItem, SkippedReason, SkippedVault},
 };
 mod pipeline;
+#[cfg(feature = "wasm")]
+mod wasm;
 
 /// The 1Password access module: log in to an account and download its vaults.
 ///
@@ -113,6 +115,11 @@ pub struct ImportSummary {
 /// Result of a direct 1Password import, including source data that could not be imported.
 #[allow(missing_docs)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    feature = "wasm",
+    derive(serde::Serialize, serde::Deserialize, tsify::Tsify),
+    tsify(into_wasm_abi)
+)]
 pub struct OnePasswordImportSummary {
     pub imported: ImportSummary,
     pub skipped_vaults: Vec<SkippedVault>,

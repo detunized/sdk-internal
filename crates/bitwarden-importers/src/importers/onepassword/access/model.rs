@@ -27,6 +27,10 @@ pub struct Vault {
 
 /// A vault that could not be opened.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    feature = "wasm",
+    derive(serde::Serialize, serde::Deserialize, tsify::Tsify)
+)]
 pub struct SkippedVault {
     /// The vault's 1Password uuid.
     pub id: String,
@@ -38,6 +42,10 @@ pub struct SkippedVault {
 
 /// An item that could not be read from an otherwise accessible vault.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    feature = "wasm",
+    derive(serde::Serialize, serde::Deserialize, tsify::Tsify)
+)]
 pub struct SkippedItem {
     /// The item's 1Password uuid.
     pub id: String,
@@ -52,6 +60,10 @@ pub struct SkippedItem {
 /// A safe, structured reason for leaving source data unimported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    feature = "wasm",
+    derive(serde::Serialize, serde::Deserialize, tsify::Tsify)
+)]
 pub enum SkippedReason {
     /// The account does not have the key or permission required to read the data.
     NoAccess,
@@ -77,6 +89,10 @@ pub struct Item {
 /// is lost.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    feature = "wasm",
+    derive(serde::Serialize, serde::Deserialize, tsify::Tsify)
+)]
 pub enum ItemCategory {
     /// Template `001`.
     Login,
