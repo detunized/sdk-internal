@@ -39,10 +39,6 @@ each one into a Bitwarden folder. 1P doesn't have folders, only tags.
 - This module reaches for `hkdf`, `aes-gcm` and `rsa` directly because `bitwarden-crypto` keeps
   those primitives private. Question: should `bitwarden-crypto` expose them, so feature crates do
   not each depend on RustCrypto themselves?
-- A wrong password reports as
-  `Internal("unexpected response from 'v2/auth/confirm-key' (HTTP 401)")` rather than
-  `BadCredentials`. The server only rejects at `confirm-key`, and its body there is not the
-  `errorCode` shape `parse_server_error` understands
 - Decide partial-import policy: import valid data; report missing-access or explicitly unsupported
   data as skipped; should unexpected JSON, decryption or internal failures abort or also be skipped?
 - `access` is `pub` only so the `test-utils` re-export can reach it, a `pub use` cannot re-export a

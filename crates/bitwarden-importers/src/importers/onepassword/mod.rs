@@ -19,6 +19,7 @@ impl From<OnePasswordError> for ImportError {
             OnePasswordError::InvalidSignInAddress(_) => {
                 ImportError::OnePasswordInvalidSignInAddress
             }
+            OnePasswordError::InvalidAccountKey(_) => ImportError::OnePasswordInvalidSecretKey,
             OnePasswordError::TwoFactorRequired => ImportError::OnePasswordTwoFactorRequired,
             OnePasswordError::TwoFactorFailed => ImportError::OnePasswordTwoFactorFailed,
             OnePasswordError::Unsupported(what) => ImportError::OnePasswordUnsupported(what),
@@ -34,6 +35,9 @@ impl From<OnePasswordError> for ImportError {
                 ImportError::OnePasswordNetwork("the account or vault was not found".to_string())
             }
             OnePasswordError::Internal(what) => ImportError::OnePasswordNetwork(what),
+            error @ OnePasswordError::UnexpectedStatus { .. } => {
+                ImportError::OnePasswordNetwork(error.to_string())
+            }
         }
     }
 }
