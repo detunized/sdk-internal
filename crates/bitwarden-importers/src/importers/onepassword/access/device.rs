@@ -17,8 +17,7 @@ const DEVICE_ENDPOINT: &str = "v1/device";
 /// Shown in the account's device list, so it names us rather than a 1Password client.
 const DEVICE_NAME: &str = "Bitwarden";
 
-/// The `model` of the SSO device descriptors is this crate's version, the way the C# library
-/// reports its host application's version.
+/// The `model` of the SSO device descriptors is this crate's version.
 const SSO_DEVICE_MODEL: &str = env!("CARGO_PKG_VERSION");
 
 /// Generates a 26-character 1Password device id from the lowercase base32 alphabet.
@@ -192,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn sso_verify_device_body_mirrors_the_csharp_client() {
+    fn sso_verify_device_body_names_the_device_and_model() {
         let info = ClientInfo::for_desktop("device-uuid");
 
         assert_eq!(

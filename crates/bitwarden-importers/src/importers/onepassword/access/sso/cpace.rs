@@ -176,7 +176,7 @@ fn write_leb128_prefixed(buffer: &mut Vec<u8>, data: &[u8]) {
 
 /// Would check `taga`, which proves the enrolled device knows the verification code too.
 ///
-/// Not implemented: like the C# library, this trusts the server to relay an honest device.
+/// Not implemented: the server is trusted to relay an honest device.
 pub(super) fn verify_tag_a(_tag_a: &[u8]) {}
 
 /// Calculates the shared secret `authB` and the `tagb` that proves knowing it.
@@ -364,8 +364,7 @@ pub(super) async fn perform_cpace(
     .await
 }
 
-/// The exchange of `PerformCpace` in the C# library, with the client secret injected so the test
-/// vectors can pin it.
+/// The CPace exchange with the client secret injected so the test vectors can pin it.
 #[allow(clippy::too_many_arguments)]
 async fn perform_cpace_with_client_secret(
     username: &str,

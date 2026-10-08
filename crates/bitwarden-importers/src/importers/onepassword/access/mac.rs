@@ -25,8 +25,7 @@ impl MacSigner {
         Self::with_request_id(session_key, bitwarden_random::rng().next_u32())
     }
 
-    /// Creates a signer whose first request id is `request_id`. The SSO login starts from 1, as
-    /// the C# client does.
+    /// Creates a signer whose first request id is `request_id`. The SSO login starts from 1.
     pub(super) fn with_request_id(session_key: &AesKey, request_id: u32) -> MacSigner {
         MacSigner {
             session_id: session_key.id.clone(),

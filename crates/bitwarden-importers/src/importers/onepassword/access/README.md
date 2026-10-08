@@ -31,9 +31,8 @@ each one into a Bitwarden folder. 1P doesn't have folders, only tags.
 
 ## SSO
 
-- A port of `Client.Sso.cs`, never run against a live SSO account. The crypto is pinned by
-  `fixtures/sso-vectors.json`, which `fixtures/scripts/sso-vectors` computes with the C# code, and
-  `sso/flow_tests.rs` runs the whole login against a fake server
+- Never run against a live SSO account. The crypto is pinned by the generated test vectors in
+  `fixtures/sso-vectors.json` and `sso/flow_tests.rs` runs the whole login against a fake server
 - Every import is a new device with a fresh uuid and nothing is kept between imports, so the user
   approves it on an enrolled device and types the verification code shown there. Then a CPace
   exchange (Ristretto255) hands over the credential bundle, the SRP x and the account unlock key
@@ -55,10 +54,10 @@ each one into a Bitwarden folder. 1P doesn't have folders, only tags.
 - The username goes on the wire raw, `v2/auth/methods` and `v3/auth/start` do not get the normalized
   one
 - `OnePasswordError::TwoFactorRequired` is never constructed
-- SSO: `taga` is not verified, like in C#, so the server is trusted to relay an honest device
+- SSO: `taga` is not verified, so the server is trusted to relay an honest device
 - SSO: a second factor asked for after the SSO login fails the import as unsupported
 - SSO: dropping the login future during an enrollment skips `end_enrollment` and the server side
   cancel; only `SsoEnrollmentContext::cancelled()` cleans up
 - SSO: no UniFFI bindings for the callbacks yet
-- SSO: the credential commit `v3/user/devicecredentials` is deliberately skipped, the C# makes it to
-  keep the device trusted. Needs a live check that the vault download works without it
+- SSO: the credential commit `v3/user/devicecredentials`, which keeps the device trusted, is
+  deliberately skipped. Needs a live check that the vault download works without it
