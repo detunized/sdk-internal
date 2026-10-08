@@ -1,9 +1,9 @@
 # 1Password access module
 
 Read access to a 1Password account. Logging in needs the username, master password and Secret Key,
-plus a TOTP passcode when the account has 2FA. An SSO account needs the username and a device uuid
-instead, and the user signs in with the identity provider. Once authenticated it downloads and
-decrypts every accessible vault into a native 1Password model.
+plus a TOTP passcode when the account has 2FA. An SSO account needs the username instead, and the
+user signs in with the identity provider. Once authenticated it downloads and decrypts every
+accessible vault into a native 1Password model.
 
 A Rust port of the OnePassword module in Bitwarden's C# `password-manager-access` library.
 
@@ -34,13 +34,9 @@ each one into a Bitwarden folder. 1P doesn't have folders, only tags.
 - A port of `Client.Sso.cs`, never run against a live SSO account. The crypto is pinned by
   `fixtures/sso-vectors.json`, which `fixtures/scripts/sso-vectors` computes with the C# code, and
   `sso/flow_tests.rs` runs the whole login against a fake server
-- A device the account does not trust yet is enrolled: the user approves it on an enrolled device
-  and types the verification code shown there, then a CPace exchange (Ristretto255) hands over the
-  credential bundle, the SRP x and the account unlock key
-- The device key that reopens the bundle next time goes through `SecureStorage`, obfuscated with the
-  fixed key the 1Password web app uses. Each user has a record of their own in it, so one storage
-  can serve several accounts. A storage that fails to read or write fails the import. The device
-  uuid has to stay the same between logins, otherwise every login enrolls the device again
+- Every import is a new device with a fresh uuid and nothing is kept between imports, so the user
+  approves it on an enrolled device and types the verification code shown there. Then a CPace
+  exchange (Ristretto255) hands over the credential bundle, the SRP x and the account unlock key
 - Added `curve25519-dalek` to the workspace
 
 ## TODO
@@ -64,3 +60,5 @@ each one into a Bitwarden folder. 1P doesn't have folders, only tags.
 - SSO: dropping the login future during an enrollment skips `end_enrollment` and the server side
   cancel; only `SsoEnrollmentContext::cancelled()` cleans up
 - SSO: no UniFFI bindings for the callbacks yet
+- SSO: the credential commit `v3/user/devicecredentials` is deliberately skipped, the C# makes it to
+  keep the device trusted. Needs a live check that the vault download works without it

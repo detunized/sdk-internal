@@ -1,8 +1,8 @@
 //! WASM bindings for the direct 1Password import.
 //!
 //! The import calls back into the user mid sign-in: for a TOTP code, or for the single sign-on
-//! browser step, device approval and secure storage. `wasm_bindgen` cannot express these as the
-//! `&dyn` callbacks the native API takes. JavaScript passes objects implementing the interfaces
+//! browser step and device approval. `wasm_bindgen` cannot express these as the `&dyn` callbacks
+//! the native API takes. JavaScript passes objects implementing the interfaces
 //! declared below instead, and the `Js*` types adapt them back to the traits.
 
 use async_trait::async_trait;
@@ -10,9 +10,9 @@ use bitwarden_threading::ThreadBoundRunner;
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    OnePasswordSecureStorage, OnePasswordSsoEnrollment, OnePasswordSsoEnrollmentResult,
-    OnePasswordSsoEnrollmentStatus, OnePasswordSsoLoginResult, OnePasswordSsoUi,
-    OnePasswordTotpResult, OnePasswordTwoFactorUi, OnePasswordVerificationCodeResult,
+    OnePasswordSsoEnrollment, OnePasswordSsoEnrollmentResult, OnePasswordSsoEnrollmentStatus,
+    OnePasswordSsoLoginResult, OnePasswordSsoUi, OnePasswordTotpResult, OnePasswordTwoFactorUi,
+    OnePasswordVerificationCodeResult,
 };
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -43,14 +43,14 @@ export interface OnePasswordSsoUi {
     performSsoLogin(ssoLoginUrl: string, redirectTo: string): Promise<string | undefined>;
 
     /**
-     * Shows the device enrollment UI. Called when this device is not trusted yet, or its stored
-     * credentials no longer work.
+     * Shows the device enrollment UI. Called once per import: every import is a new device.
      */
     beginSsoEnrollment(): Promise<OnePasswordSsoEnrollment>;
 }
 
 /**
- * A device enrollment in progress. `endEnrollment` is called exactly once when it ends.
+ * A device enrollment in progress. `endEnrollment` is called exactly once when it ends, unless the
+ * import is dropped halfway.
  */
 export interface OnePasswordSsoEnrollment {
     /**
@@ -72,26 +72,6 @@ export interface OnePasswordSsoEnrollment {
 
     /** Closes the enrollment UI. */
     endEnrollment(result: OnePasswordSsoEnrollmentResult): Promise<void>;
-}
-
-/**
- * Secure per-device storage for the credentials a single sign-on login keeps.
- *
- * One storage can serve several accounts, as each keeps its record under a name of its own. Treat
- * the names as opaque keys. A rejection fails the import. Reject with a string to say why, and keep
- * stored values out of it.
- */
-export interface OnePasswordSecureStorage {
-    /**
-     * Rejects when the storage cannot be read. Resolving to undefined then would make the device
-     * enroll again and overwrite a value that is still there.
-     *
-     * @returns the value stored under `name`, or undefined or null if there is none.
-     */
-    loadString(name: string): Promise<string | undefined | null>;
-
-    /** Stores `value` under `name`, replacing any previous one. Rejects when it cannot. */
-    storeString(name: string, value: string): Promise<void>;
 }
 "#;
 
@@ -183,23 +163,6 @@ extern "C" {
     async fn end_enrollment(
         this: &RawJsOnePasswordSsoEnrollment,
         result: OnePasswordSsoEnrollmentResult,
-    ) -> Result<JsValue, JsValue>;
-
-    /// The JavaScript object implementing the secure storage.
-    #[wasm_bindgen(js_name = OnePasswordSecureStorage, typescript_type = "OnePasswordSecureStorage")]
-    pub type RawJsOnePasswordSecureStorage;
-
-    #[wasm_bindgen(catch, method, structural, js_name = loadString)]
-    async fn load_string(
-        this: &RawJsOnePasswordSecureStorage,
-        name: &str,
-    ) -> Result<JsValue, JsValue>;
-
-    #[wasm_bindgen(catch, method, structural, js_name = storeString)]
-    async fn store_string(
-        this: &RawJsOnePasswordSecureStorage,
-        name: &str,
-        value: &str,
     ) -> Result<JsValue, JsValue>;
 }
 
@@ -323,65 +286,4 @@ impl OnePasswordSsoEnrollment for CancelledEnrollment {
     }
 
     async fn end_enrollment(&self, _result: OnePasswordSsoEnrollmentResult) {}
-}
-
-/// Adapts the JavaScript secure storage to [`OnePasswordSecureStorage`], pinned to its thread like
-/// [`JsOnePasswordTwoFactorUi`].
-pub(crate) struct JsOnePasswordSecureStorage(ThreadBoundRunner<RawJsOnePasswordSecureStorage>);
-
-impl JsOnePasswordSecureStorage {
-    pub(crate) fn new(storage: RawJsOnePasswordSecureStorage) -> Self {
-        Self(ThreadBoundRunner::new(storage))
-    }
-}
-
-#[async_trait]
-impl OnePasswordSecureStorage for JsOnePasswordSecureStorage {
-    async fn load_string(&self, name: &str) -> Result<Option<String>, String> {
-        let name = name.to_owned();
-        self.0
-            .run_in_thread(move |storage| async move {
-                storage
-                    .load_string(&name)
-                    .await
-                    .map_err(rejection_message)
-                    .and_then(stored_string)
-            })
-            .await
-            .map_err(|error| error.to_string())?
-    }
-
-    async fn store_string(&self, name: &str, value: String) -> Result<(), String> {
-        let name = name.to_owned();
-        self.0
-            .run_in_thread(move |storage| async move {
-                storage
-                    .store_string(&name, &value)
-                    .await
-                    .map(|_| ())
-                    .map_err(rejection_message)
-            })
-            .await
-            .map_err(|error| error.to_string())?
-    }
-}
-
-/// A stored string, or `None` for `undefined` and `null`. Anything else is an error rather than a
-/// missing value, which would make the device enroll again and overwrite what is there.
-fn stored_string(value: JsValue) -> Result<Option<String>, String> {
-    if value.is_undefined() || value.is_null() {
-        return Ok(None);
-    }
-    value
-        .as_string()
-        .map(Some)
-        .ok_or_else(|| "the storage returned a value that is not a string".to_string())
-}
-
-/// What a rejected storage call says. A string rejection is passed on as is. Anything else, such as
-/// an `Error`, gets a generic message as its text cannot be read without js-sys.
-fn rejection_message(rejection: JsValue) -> String {
-    rejection
-        .as_string()
-        .unwrap_or_else(|| "the storage rejected the call".to_string())
 }

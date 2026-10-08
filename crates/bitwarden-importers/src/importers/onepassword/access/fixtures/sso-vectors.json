@@ -25,28 +25,6 @@
       "data": "NSZ7d9lP3P-eMh74rbJfWc25EMh5LEAYnvoLtBOmJC1NpXhLP4v4q1jBGcJeDJstQvf7ec88S8n4RoR7oufObFzMfCS3tg3rKBY89Djv5xNKb-Pv0sV4ZOyN7aQy26VMVT2olmfagaJ_XYNqz92v7UtdDtW8JOU6t1jMdbiZgywQUbXbCqJjiCuC36oYceISWAJk0264QveqX5x-xsfSNw3tSEqYUk8"
     }
   },
-  "local": {
-    "device_key_id": "m3h6kz4qjbj5xlzp7g2vy3tq4e",
-    "device_key_seed": "0a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223242526272829",
-    "device_key_salt": "32333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f6061",
-    "device_key": "b7f6b28fd85117d92c55000aa9fbe0556407751bba8faf2334d71da01cd6523c",
-    "stored_device_key_derivation": {
-      "kid": "3tnqywhecddkhvl375l6yu7qri",
-      "enc": "A256GCM",
-      "cty": "b5+jwk+json",
-      "iv": "Hh8gISIjJCUmJygp",
-      "data": "BBzuIBvhsKF8BaITOBc0_i_ao0pG_aIx9orwtcUgDzV0ET6l-fVAhcu5GqUTLbKJoKvNuSMM40KzSUquiG5-V2xwmlK1F0j_A6gJfeN4PuAQro_sATY1lPzUMOYs4xh7nTPPuC2nAGqe_oADpVygwqQdwkzM8OEeWTc34KRfp9lOkxWUBUvIAhFFkBSiyeIPInNRr-uwfzJOWR9d9fOccwgTaUNBH3WFmqeUH7Y"
-    },
-    "serialized_credential_bundle": "{\"srpx\":\"oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8\",\"auk\":{\"alg\":\"A256GCM\",\"k\":\"WyICHHlP5lPigZUGZYoivbJMqgHjSti86UKwdjCryYM\",\"kty\":\"oct\",\"kid\":\"mp\"}}",
-    "encrypted_credential_bundle": {
-      "kid": "m3h6kz4qjbj5xlzp7g2vy3tq4e",
-      "enc": "A256GCM",
-      "cty": "b5+jwk+json",
-      "iv": "KCkqKywtLi8wMTIz",
-      "data": "9Cuk3jSaY8U0WYOKCYGno2aJ9CLkKXjm1sWAMYqvNRw2qm2NiEEKJ-s3iEdx-oCiYhMAhSLf59bJF43l5Q9WyhCPbOcXSJU8Zo-XxwRA__WMj3y1745fhcz0JfsqejVHh71Uhkj-GhyrLXxTA3UtFgjz2Tk8jWH5YsMeodiWKUWqZNsAgHKngXL2RKR1OAMvaPNvlp9T5voQmcfZrgFKHMDPrTP22Gk"
-    },
-    "local_user_info_json": "{\"userId\":\"USERUUID\",\"accountId\":\"ACCOUNTUUID\",\"credentialsEncryptionKeyId\":\"m3h6kz4qjbj5xlzp7g2vy3tq4e\",\"deviceKeyDerivation\":{\"kid\":\"3tnqywhecddkhvl375l6yu7qri\",\"enc\":\"A256GCM\",\"cty\":\"b5\\u002Bjwk\\u002Bjson\",\"iv\":\"Hh8gISIjJCUmJygp\",\"data\":\"BBzuIBvhsKF8BaITOBc0_i_ao0pG_aIx9orwtcUgDzV0ET6l-fVAhcu5GqUTLbKJoKvNuSMM40KzSUquiG5-V2xwmlK1F0j_A6gJfeN4PuAQro_sATY1lPzUMOYs4xh7nTPPuC2nAGqe_oADpVygwqQdwkzM8OEeWTc34KRfp9lOkxWUBUvIAhFFkBSiyeIPInNRr-uwfzJOWR9d9fOccwgTaUNBH3WFmqeUH7Y\"}}"
-  },
   "leb128_prefix": {
     "0": "00",
     "1": "01",

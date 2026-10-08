@@ -10,7 +10,6 @@ pub use client::Client;
 mod credentials;
 pub use credentials::{Credentials, SsoCredentials};
 mod device;
-pub use device::generate_device_uuid;
 mod error;
 pub use error::OnePasswordError;
 mod identity;
@@ -30,8 +29,8 @@ pub use sign_in::{SignInAddress, SignInDomain};
 mod srp;
 mod sso;
 pub use sso::ui::{
-    EnrollmentStatus, SecureStorage, SsoEnrollmentContext, SsoEnrollmentResult, SsoLoginResult,
-    SsoUi, VerificationCodeResult,
+    EnrollmentStatus, SsoEnrollmentContext, SsoEnrollmentResult, SsoLoginResult, SsoUi,
+    VerificationCodeResult,
 };
 mod two_factor;
 pub use two_factor::{TotpResult, TwoFactorUi};

@@ -55,23 +55,17 @@ impl Drop for Credentials {
 pub struct SsoCredentials {
     /// The account's email address.
     pub username: String,
-    /// The id of this device, which the account trusts once it is enrolled. It has to stay the
-    /// same between logins, otherwise every login enrolls the device again.
-    pub device_uuid: String,
     /// Where the account signs in, such as `my.1password.com`.
     pub sign_in_address: SignInAddress,
 }
 
 impl SsoCredentials {
-    /// Rejects a blank username or device uuid and normalizes the sign-in address.
+    /// Rejects a blank username and normalizes the sign-in address.
     pub(super) fn validate(&mut self) -> Result<(), OnePasswordError> {
         if self.username.trim().is_empty() {
             return Err(OnePasswordError::Internal(
                 "username (email) is required".into(),
             ));
-        }
-        if self.device_uuid.trim().is_empty() {
-            return Err(OnePasswordError::Internal("device uuid is required".into()));
         }
         self.sign_in_address.normalize()
     }
@@ -84,7 +78,6 @@ mod tests {
     fn credentials() -> SsoCredentials {
         SsoCredentials {
             username: "user@example.com".into(),
-            device_uuid: "m3h6kz4qjbj5xlzp7g2vy3tq4e".into(),
             sign_in_address: SignInAddress {
                 subdomain: "  ACME ".into(),
                 domain: SignInDomain::Global,
@@ -110,19 +103,6 @@ mod tests {
         for username in ["", "   \t"] {
             let mut credentials = credentials();
             credentials.username = username.into();
-
-            assert!(matches!(
-                credentials.validate(),
-                Err(OnePasswordError::Internal(_))
-            ));
-        }
-    }
-
-    #[test]
-    fn validation_rejects_a_blank_device_uuid() {
-        for device_uuid in ["", "   \t"] {
-            let mut credentials = credentials();
-            credentials.device_uuid = device_uuid.into();
 
             assert!(matches!(
                 credentials.validate(),

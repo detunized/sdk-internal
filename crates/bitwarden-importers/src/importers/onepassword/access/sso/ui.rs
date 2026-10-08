@@ -2,28 +2,6 @@
 
 use async_trait::async_trait;
 
-/// Secure per-device storage the SSO flow keeps its local credentials in.
-///
-/// The implementation decides what "secure" means: an OS keychain, encrypted storage, or nothing
-/// at all for a one-shot import that leaves no device credentials behind.
-///
-/// One storage can serve several accounts, as each keeps its record under a name of its own. The
-/// names are opaque keys. An error fails the import and shows up in its message, so it must say
-/// what went wrong without including a stored value.
-#[async_trait]
-pub trait SecureStorage: Send + Sync {
-    /// Returns the value stored under `name`, or `None` when there is none.
-    ///
-    /// Fails when the storage cannot be read. Answering `None` instead would make the device
-    /// enroll again and overwrite a value that is still there.
-    async fn load_string(&self, name: &str) -> Result<Option<String>, String>;
-
-    /// Stores the value under `name`, replacing any previous one.
-    ///
-    /// Fails when the value could not be stored.
-    async fn store_string(&self, name: &str, value: String) -> Result<(), String>;
-}
-
 /// The outcome of the identity provider step of an SSO login.
 pub enum SsoLoginResult {
     /// The full URL the identity provider redirected to. It carries the authorization code.
@@ -40,7 +18,7 @@ pub trait SsoUi: Send + Sync {
     async fn perform_sso_login(&self, sso_login_url: &str, redirect_to: &str) -> SsoLoginResult;
 
     /// Shows the device enrollment UI, which the login then drives through the returned context.
-    /// Called when this device is not trusted yet, or its stored credentials no longer work.
+    /// Called once per login: every import is a new device.
     async fn begin_sso_enrollment(&self) -> Box<dyn SsoEnrollmentContext>;
 }
 

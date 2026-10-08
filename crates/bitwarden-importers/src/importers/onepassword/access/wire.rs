@@ -122,8 +122,7 @@ pub(super) struct SsoLoginUrl {
 
 /// Response from `v3/auth/sso/oidc/verify`.
 ///
-/// `type` says whether the server knows this device: `found` normally comes with `auth`,
-/// `device_not_enrolled` without.
+/// `type` is `device_not_enrolled` for a device the server has not seen, which every import is.
 #[derive(Debug, Deserialize)]
 pub(super) struct SsoSession {
     #[serde(rename = "type")]
@@ -131,7 +130,6 @@ pub(super) struct SsoSession {
     pub user: SsoUser,
     #[serde(rename = "ssoAuth")]
     pub sso_auth: SsoAuth,
-    pub auth: Option<SsoDeviceAuth>,
 }
 
 /// The user an SSO login authenticated.
@@ -140,10 +138,6 @@ pub(super) struct SsoUser {
     /// Goes into the header of every request that follows.
     #[serde(rename = "sessionUuid")]
     pub session_uuid: String,
-    #[serde(rename = "accountUuid")]
-    pub account_uuid: String,
-    #[serde(rename = "userUuid")]
-    pub user_uuid: String,
 }
 
 /// What the identity provider login earned: a token to sign in with.
@@ -163,14 +157,6 @@ impl fmt::Debug for SignInTokenDetails {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SignInTokenDetails").finish_non_exhaustive()
     }
-}
-
-/// The credentials of an enrolled device, as the server keeps them for it.
-#[derive(Debug, Deserialize)]
-pub(super) struct SsoDeviceAuth {
-    /// The credential bundle, encrypted with the device key that never leaves the device.
-    #[serde(rename = "encCredentials")]
-    pub encrypted_credentials: EncryptedEnvelope,
 }
 
 /// Response from `v3/auth/start`.
@@ -326,51 +312,17 @@ pub(super) struct SharedCredentials {
 ///
 /// Deliberately not `Debug`: it holds the SRP `x` and the account unlock key. The secrets are
 /// `Zeroizing` field by field, so a bundle that fails to parse halfway is wiped too.
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 pub(super) struct CredentialBundle {
     pub srpx: Zeroizing<String>,
     pub auk: Auk,
 }
 
-/// The account unlock key in the shape of a JWK. Deliberately not `Debug`.
-#[derive(Deserialize, Serialize)]
+/// The account unlock key in the shape of a JWK, of which only the key is read. Deliberately not
+/// `Debug`.
+#[derive(Deserialize)]
 pub(super) struct Auk {
-    pub alg: String,
     pub k: Zeroizing<String>,
-    pub kty: String,
-    pub kid: String,
-}
-
-/// The SSO credentials record kept in secure local storage, one per 1Password user.
-///
-/// Every field is optional, the way the C# client writes it: a missing or unreadable record means
-/// there are no local credentials, and one is only worth restoring once its derivation decrypts.
-///
-/// Not `Debug`: the fixed obfuscation key opens the derivation, so it is as secret as the seed.
-#[derive(Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct LocalUserInfo {
-    /// Checked against the user being signed in, so another user's credentials are never
-    /// restored.
-    pub user_id: Option<String>,
-    /// Sent to the server when the SSO login starts.
-    pub account_id: Option<String>,
-    /// The device key id, reported to the server alongside the encrypted credentials. The key
-    /// itself stays on the device.
-    pub credentials_encryption_key_id: Option<String>,
-    /// The device key derivation parameters, obfuscated with a fixed key.
-    pub device_key_derivation: Option<EncryptedEnvelope>,
-}
-
-/// The device key derivation parameters as they are serialized into local storage.
-///
-/// `k` and `s` are URL-safe base64 without padding. Deliberately not `Debug`: `k` is the seed the
-/// device key is derived from.
-#[derive(Deserialize, Serialize)]
-pub(super) struct DeviceKeyDerivation {
-    pub kid: String,
-    pub k: Zeroizing<String>,
-    pub s: Zeroizing<String>,
 }
 
 /// A server error body.

@@ -4,7 +4,7 @@ use bitwarden_core::Client;
 
 use crate::{
     Credentials, ImportError, ImportOptions, ImportSummary, OnePasswordImportSummary,
-    OnePasswordSecureStorage, OnePasswordSsoCredentials, OnePasswordSsoUi, OnePasswordTwoFactorUi,
+    OnePasswordSsoCredentials, OnePasswordSsoUi, OnePasswordTwoFactorUi,
     importers::{
         self,
         onepassword::{access, convert},
@@ -41,13 +41,10 @@ pub(crate) async fn import_onepassword_sso(
     client: &Client,
     credentials: OnePasswordSsoCredentials,
     ui: &dyn OnePasswordSsoUi,
-    storage: &dyn OnePasswordSecureStorage,
     options: ImportOptions,
 ) -> Result<OnePasswordImportSummary, ImportError> {
     let onepassword = access_client(client);
-    let account = onepassword
-        .open_account_sso(credentials, ui, storage)
-        .await?;
+    let account = onepassword.open_account_sso(credentials, ui).await?;
     submit_onepassword(client, account, options).await
 }
 

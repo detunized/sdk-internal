@@ -4,9 +4,8 @@ use wasm_bindgen::prelude::*;
 
 use crate::{
     Credentials, ImportError, ImportOptions, ImportSummary, OnePasswordImportSummary,
-    OnePasswordSecureStorage, OnePasswordSsoCredentials, OnePasswordSsoUi, OnePasswordTwoFactorUi,
+    OnePasswordSsoCredentials, OnePasswordSsoUi, OnePasswordTwoFactorUi,
     import::{import_kdbx, import_onepassword, import_onepassword_sso},
-    importers::onepassword::access,
 };
 
 #[allow(missing_docs)]
@@ -36,15 +35,6 @@ impl ImporterClient {
     ) -> Result<ImportSummary, ImportError> {
         import_kdbx(&self.client, file, password, key_file, options).await
     }
-
-    /// Generates a device id for [`ImporterClient::import_onepassword_sso`].
-    ///
-    /// The account knows a device by that id, so persist it next to the secure storage and pass
-    /// the same one on every import; a fresh id each time undoes the enrollment and repeats the
-    /// device approval.
-    pub fn generate_onepassword_device_uuid(&self) -> String {
-        access::generate_device_uuid()
-    }
 }
 
 #[cfg(feature = "wasm")]
@@ -70,12 +60,10 @@ impl ImporterClient {
         &self,
         credentials: OnePasswordSsoCredentials,
         ui: crate::wasm::RawJsOnePasswordSsoUi,
-        storage: crate::wasm::RawJsOnePasswordSecureStorage,
         options: ImportOptions,
     ) -> Result<OnePasswordImportSummary, ImportError> {
         let ui = crate::wasm::JsOnePasswordSsoUi::new(ui);
-        let storage = crate::wasm::JsOnePasswordSecureStorage::new(storage);
-        import_onepassword_sso(&self.client, credentials, &ui, &storage, options).await
+        import_onepassword_sso(&self.client, credentials, &ui, options).await
     }
 }
 
@@ -98,21 +86,18 @@ impl ImporterClient {
 
     /// The same import as [`ImporterClient::import_onepassword`], signing in with single sign-on.
     ///
-    /// Signs in with the email, device id and sign-in address in `credentials` through the
-    /// account's identity provider, which `ui` opens for the user. On a device the account does
-    /// not trust yet, the user approves this device from another 1Password device and types the
-    /// verification code it shows, again through `ui`. `storage` keeps what reopens the
-    /// credentials that approval hands over, so a later import with the same device id and storage
-    /// can skip it. A sign-in the user gives up on, at the identity provider or during the
-    /// approval, ends with `ImportError::OnePasswordCanceled`.
+    /// Signs in with the email and sign-in address in `credentials` through the account's identity
+    /// provider, which `ui` opens for the user. Every import is a new device for the account, so
+    /// the user approves it from another 1Password device and types the verification code it
+    /// shows, again through `ui`. A sign-in the user gives up on, at the identity provider or
+    /// during the approval, ends with `ImportError::OnePasswordCanceled`.
     pub async fn import_onepassword_sso(
         &self,
         credentials: OnePasswordSsoCredentials,
         ui: &dyn OnePasswordSsoUi,
-        storage: &dyn OnePasswordSecureStorage,
         options: ImportOptions,
     ) -> Result<OnePasswordImportSummary, ImportError> {
-        import_onepassword_sso(&self.client, credentials, ui, storage, options).await
+        import_onepassword_sso(&self.client, credentials, ui, options).await
     }
 }
 

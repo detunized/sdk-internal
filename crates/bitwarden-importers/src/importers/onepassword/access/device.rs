@@ -23,10 +23,8 @@ const SSO_DEVICE_MODEL: &str = env!("CARGO_PKG_VERSION");
 
 /// Generates a 26-character 1Password device id from the lowercase base32 alphabet.
 ///
-/// A password login takes a fresh one each time: it registers the id with the account and nothing
-/// uses it afterwards. An SSO login instead identifies an enrolled device by the id, so the caller
-/// generates it once and persists it.
-pub fn generate_device_uuid() -> String {
+/// Every login takes a fresh one: the account sees each import as a new device.
+pub(super) fn generate_device_uuid() -> String {
     let mut rng = bitwarden_random::rng();
     (0..DEVICE_UUID_LENGTH)
         .map(|_| BASE32_ALPHABET[(rng.next_u32() % 32) as usize] as char)

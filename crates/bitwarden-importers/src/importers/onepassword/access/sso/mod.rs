@@ -1,5 +1,5 @@
-//! Login with single sign-on: enroll or restore a trusted device, then sign in with the
-//! credentials it provides.
+//! Login with single sign-on: enroll this device with the approval of an enrolled one, then sign in
+//! with the credentials it hands over.
 
 use std::time::Duration;
 
@@ -9,12 +9,7 @@ use zeroize::Zeroizing;
 
 use self::{
     enrollment::enroll_device,
-    local::{
-        decrypt_credential_bundle, derive_device_key, encrypt_credential_bundle,
-        encrypt_for_storage, generate_device_key_derivation, load_and_derive_device_key,
-        load_local_credentials, store_local_credentials,
-    },
-    ui::{SecureStorage, SsoLoginResult, SsoUi},
+    ui::{SsoLoginResult, SsoUi},
 };
 use super::{
     credentials::SsoCredentials,
@@ -26,10 +21,7 @@ use super::{
     rest::RestClient,
     session::Session,
     srp::perform_and_verify_with_x,
-    wire::{
-        AuthComplete, CredentialBundle, LocalUserInfo, LoginInfo, NewSession, SsoLoginUrl,
-        SsoSession, SuccessStatus,
-    },
+    wire::{AuthComplete, LoginInfo, NewSession, SsoLoginUrl, SsoSession},
 };
 
 mod cpace;
@@ -38,7 +30,6 @@ mod enrollment;
 mod fake_server;
 #[cfg(test)]
 mod flow_tests;
-mod local;
 #[cfg(test)]
 mod test_support;
 pub mod ui;
@@ -47,8 +38,6 @@ const OIDC_METHOD: &str = "OIDC";
 const SSO_START_ENDPOINT: &str = "v3/auth/sso/oidc/start";
 const SSO_VERIFY_ENDPOINT: &str = "v3/auth/sso/oidc/verify";
 const DEVICE_NOT_ENROLLED: &str = "device_not_enrolled";
-const DEVICE_FOUND: &str = "found";
-const DEVICE_CREDENTIALS_ENDPOINT: &str = "v3/user/devicecredentials";
 
 /// The timing knobs of the SSO network flows, grouped so the tests can shrink them.
 pub(super) struct Timing {
@@ -78,17 +67,12 @@ impl Default for Timing {
 /// Signs in with single sign-on. Returns the signed session and the account unlock key that opens
 /// the account's keysets.
 ///
-/// The device is enrolled unless the server knows it and the credentials it keeps for it can be
-/// restored with the device key in `storage`. Enrolling takes the user through `ui`, and leaves a
-/// new device key in `storage` for the next login.
-///
-/// The record of each user has a name of its own in `storage`, so one storage serves several
-/// accounts. A storage that fails to read or write fails the login.
+/// The device is always new to the account, so the user approves it on an enrolled device through
+/// `ui`.
 pub(super) async fn sso_login(
     credentials: &SsoCredentials,
     client_info: &ClientInfo,
     ui: &dyn SsoUi,
-    storage: &dyn SecureStorage,
     rest: &RestClient,
     timing: &Timing,
 ) -> Result<(Session, Zeroizing<Vec<u8>>), OnePasswordError> {
@@ -98,56 +82,37 @@ pub(super) async fn sso_login(
     // 2. Refuse an account that does not sign in with SSO.
     let account = require_sso(&login_info, &credentials.username)?;
 
-    // 3. What an earlier enrollment of this device left for this user, if anything.
-    let local = load_local_credentials(storage, &account.user_uuid)
-        .await?
-        .unwrap_or_default();
-
-    // 4. From here on the requests go to the SSO API of the account.
+    // 3. From here on the requests go to the SSO API of the account.
     let sso_rest = rest.with_base_url(account.api_url());
 
-    // 5. The server names the identity provider page to send the user to.
-    let sso_login_url = start_sso_login(&account, &local, &sso_rest).await?;
+    // 4. The server names the identity provider page to send the user to.
+    let sso_login_url = start_sso_login(&account, &sso_rest).await?;
 
-    // 6. The user signs in at the identity provider, which redirects back with a code.
+    // 5. The user signs in at the identity provider, which redirects back with a code.
     let (code, state) = perform_sso_login(&sso_login_url, ui).await?;
 
-    // 7. The server trades the code for an SSO session and a sign-in token.
+    // 6. The server trades the code for an SSO session and a sign-in token.
     let sso_session = verify_sso_login(&code, &state, client_info, &sso_rest).await?;
 
-    // 8. The requests that follow belong to this SSO session.
+    // 7. The requests that follow belong to this SSO session.
     let sso_rest = sso_rest.with_session_id(&sso_session.user.session_uuid)?;
 
-    // 9. The server says whether it has seen this device before.
-    let device = device_state(&sso_session)?;
+    // 8. The server has not seen this device.
+    require_new_device(&sso_session)?;
 
-    // 10. Restore the credentials of a known device, which the server keeps encrypted with the
-    //     device key.
-    let restored = match device {
-        DeviceState::Found => restore_credentials(&sso_session, &local),
-        DeviceState::NotEnrolled => None,
-    };
+    // 9. The user approves the device on an enrolled one, which hands over the credential bundle.
+    let sign_in_token = sso_session.sso_auth.sign_in_token_details.token.as_str();
+    let bundle = enroll_device(
+        &credentials.username,
+        &account.sign_in_address,
+        sign_in_token,
+        ui,
+        &sso_rest,
+        timing,
+    )
+    .await?;
 
-    // 11. A new device, or one that cannot open its credentials, gets approved by the user on an
-    //     enrolled device.
-    let (bundle, enrollment_uuid) = match restored {
-        Some(bundle) => (bundle, None),
-        None => {
-            let sign_in_token = sso_session.sso_auth.sign_in_token_details.token.as_str();
-            let (bundle, enrollment_uuid) = enroll_device(
-                &credentials.username,
-                &account.sign_in_address,
-                sign_in_token,
-                ui,
-                &sso_rest,
-                timing,
-            )
-            .await?;
-            (bundle, Some(enrollment_uuid))
-        }
-    };
-
-    // 12. The bundle holds the SRP x that signs in without a password.
+    // 10. The bundle holds the SRP x that signs in without a password.
     let srp_x = Zeroizing::new(decode64_loose(&bundle.srpx)?);
     let master_key = Zeroizing::new(decode64_loose(&bundle.auk.k)?);
     let (session_key, session_rest) = login(
@@ -160,21 +125,7 @@ pub(super) async fn sso_login(
     )
     .await?;
 
-    // 13. The credentials of a new device only exist in memory so far, keep them for the next
-    //     login.
-    if let Some(enrollment_uuid) = enrollment_uuid {
-        commit_device(
-            &sso_session,
-            &enrollment_uuid,
-            &bundle,
-            storage,
-            &session_key,
-            &session_rest,
-        )
-        .await?;
-    }
-
-    // 14. The account unlock key plays the role of the master key.
+    // 11. The account unlock key plays the role of the master key.
     Ok((Session::new(session_key, session_rest), master_key))
 }
 
@@ -191,15 +142,6 @@ impl SsoAccount {
     pub(super) fn api_url(&self) -> String {
         format!("{}/api", self.sign_in_address.trim_end_matches('/'))
     }
-}
-
-/// What the server says about this device once the identity provider login is verified.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum DeviceState {
-    /// The server does not know the device, so it has to be enrolled.
-    NotEnrolled,
-    /// The server knows the device and sent the credentials it holds for it.
-    Found,
 }
 
 /// Checks that the account signs in with SSO and that its login info says who the user is and
@@ -262,37 +204,18 @@ fn has_allowed_scheme(url: &Url) -> bool {
     url.scheme() == "https" || (cfg!(test) && url.scheme() == "http")
 }
 
-/// The URL the server sends to open in a browser must be a web address, whatever else it holds.
-/// The URL is not echoed in the error: it carries the redirect URI and the state.
-fn validate_sso_login_url(sso_login_url: &str) -> Result<(), OnePasswordError> {
-    let valid =
-        Url::parse(sso_login_url).is_ok_and(|url| has_allowed_scheme(&url) && url.has_host());
-    if !valid {
-        return Err(OnePasswordError::Internal(
-            "the SSO login URL is not an https URL".into(),
-        ));
-    }
-    Ok(())
+fn is_web_url(url: &str) -> bool {
+    Url::parse(url).is_ok_and(|url| has_allowed_scheme(&url) && url.has_host())
 }
 
-/// Asks for the URL of the identity provider login. The ids of an earlier enrollment on this
-/// device go along, when there are any, so the server can tell which credentials to offer.
+/// Asks for the URL of the identity provider login.
 pub(super) async fn start_sso_login(
     account: &SsoAccount,
-    local: &LocalUserInfo,
     rest: &RestClient,
 ) -> Result<String, OnePasswordError> {
-    let mut body = json!({ "userUuid": account.user_uuid });
-    for (key, value) in [
-        ("accountUuid", &local.account_id),
-        ("keyId", &local.credentials_encryption_key_id),
-    ] {
-        if let Some(value) = value {
-            body[key] = json!(value);
-        }
-    }
-
-    let response: SsoLoginUrl = rest.post_json(SSO_START_ENDPOINT, body).await?;
+    let response: SsoLoginUrl = rest
+        .post_json(SSO_START_ENDPOINT, json!({ "userUuid": account.user_uuid }))
+        .await?;
     Ok(response.auth_redirect)
 }
 
@@ -302,11 +225,21 @@ pub(super) async fn perform_sso_login(
     sso_login_url: &str,
     ui: &dyn SsoUi,
 ) -> Result<(String, String), OnePasswordError> {
-    validate_sso_login_url(sso_login_url)?;
+    // Neither URL is echoed in the errors: they carry the state.
+    if !is_web_url(sso_login_url) {
+        return Err(OnePasswordError::Internal(
+            "the SSO login URL is not an https URL".into(),
+        ));
+    }
 
     let redirect_to = url_parameter(sso_login_url, "redirect_uri").ok_or_else(|| {
         OnePasswordError::Internal("no redirect_uri found in the SSO login URL".into())
     })?;
+    if !is_web_url(&redirect_to) {
+        return Err(OnePasswordError::Internal(
+            "the SSO redirect URI is not an https URL".into(),
+        ));
+    }
 
     let redirected_to = match ui.perform_sso_login(sso_login_url, &redirect_to).await {
         SsoLoginResult::RedirectedTo(url) => url,
@@ -345,29 +278,16 @@ pub(super) async fn verify_sso_login(
     .await
 }
 
-/// Tells whether the server knows this device.
-pub(super) fn device_state(session: &SsoSession) -> Result<DeviceState, OnePasswordError> {
-    match session.state.as_str() {
-        DEVICE_NOT_ENROLLED => Ok(DeviceState::NotEnrolled),
-        DEVICE_FOUND => Ok(DeviceState::Found),
-        state => Err(OnePasswordError::Internal(format!(
-            "unexpected SSO session state: {state}"
-        ))),
+/// A device with a fresh id cannot be known to the server, so anything but `device_not_enrolled`
+/// is unexpected.
+pub(super) fn require_new_device(session: &SsoSession) -> Result<(), OnePasswordError> {
+    if session.state != DEVICE_NOT_ENROLLED {
+        return Err(OnePasswordError::Internal(format!(
+            "unexpected SSO session state: {}",
+            session.state
+        )));
     }
-}
-
-/// Decrypts the credentials the server holds for this device with the device key kept in local
-/// storage. Anything that goes wrong means there is nothing to restore, and the caller enrolls the
-/// device instead.
-pub(super) fn restore_credentials(
-    session: &SsoSession,
-    local: &LocalUserInfo,
-) -> Option<CredentialBundle> {
-    let derivation = local.device_key_derivation.as_ref()?;
-    let auth = session.auth.as_ref()?;
-
-    let device_key = load_and_derive_device_key(derivation).ok()?;
-    decrypt_credential_bundle(&auth.encrypted_credentials, &device_key).ok()
+    Ok(())
 }
 
 /// Signs in with the sign-in token the SSO login earned, proving knowledge of the SRP x from the
@@ -463,55 +383,6 @@ async fn complete_auth(
     Ok(())
 }
 
-/// Stores the credentials of a newly enrolled device on the server, encrypted with a fresh device
-/// key, and keeps that key in local storage.
-async fn commit_device(
-    sso_session: &SsoSession,
-    enrollment_uuid: &str,
-    bundle: &CredentialBundle,
-    storage: &dyn SecureStorage,
-    session_key: &AesKey,
-    rest: &RestClient,
-) -> Result<(), OnePasswordError> {
-    // 1. The server keeps the credentials, encrypted with a key only this device holds.
-    let derivation = generate_device_key_derivation();
-    let device_key = derive_device_key(&derivation);
-    let encrypted_credentials = encrypt_credential_bundle(bundle, &device_key)?;
-
-    // 2. Give the server the encrypted credentials. Only then does it consider the device enrolled
-    //    and stop asking for the enrollment.
-    let result: SuccessStatus = rest
-        .post_encrypted_json_plain(
-            DEVICE_CREDENTIALS_ENDPOINT,
-            json!({
-                "deviceCredentials": {"encCredentials": encrypted_credentials, "v": 2},
-                "keyId": device_key.id,
-                "enrollmentUuid": enrollment_uuid,
-            }),
-            session_key,
-        )
-        .await?;
-    if result.success != 1 {
-        return Err(OnePasswordError::Internal(
-            "failed to store the device credentials".into(),
-        ));
-    }
-
-    // 3. Keep the device key for the next login, once the server has the credentials it opens.
-    let user = &sso_session.user;
-    store_local_credentials(
-        storage,
-        &user.user_uuid,
-        &LocalUserInfo {
-            user_id: Some(user.user_uuid.clone()),
-            account_id: Some(user.account_uuid.clone()),
-            credentials_encryption_key_id: Some(device_key.id.clone()),
-            device_key_derivation: Some(encrypt_for_storage(&derivation)?),
-        },
-    )
-    .await
-}
-
 /// The form-decoded value of the first parameter called `name` in the query or the fragment of
 /// `url`, as OAuth encodes the redirect. A missing or empty value is `None`.
 fn url_parameter(url: &str, name: &str) -> Option<String> {
@@ -535,9 +406,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
     use super::{
-        super::wire::EncryptedEnvelope,
         fake_server::{client_info, verify_response},
-        local::{encrypt_for_storage, generate_device_key_derivation},
         test_support::{rest_client, vectors},
         ui::SsoEnrollmentContext,
         *,
@@ -613,17 +482,8 @@ mod tests {
         .expect("an SSO account")
     }
 
-    fn local_user_info() -> LocalUserInfo {
-        serde_json::from_str(&vectors().local.local_user_info_json).expect("valid record")
-    }
-
-    fn session(state: &str, encrypted_credentials: Option<&EncryptedEnvelope>) -> SsoSession {
-        serde_json::from_value(verify_response(state, encrypted_credentials))
-            .expect("a valid session")
-    }
-
-    fn found_session(encrypted_credentials: &EncryptedEnvelope) -> SsoSession {
-        session("found", Some(encrypted_credentials))
+    fn session(state: &str) -> SsoSession {
+        serde_json::from_value(verify_response(state)).expect("a valid session")
     }
 
     #[test]
@@ -728,7 +588,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_sends_only_the_user_uuid_without_local_credentials() {
+    async fn start_sends_only_the_user_uuid() {
         let server = MockServer::start().await;
         server
             .register(
@@ -743,81 +603,11 @@ mod tests {
             )
             .await;
 
-        let url = start_sso_login(
-            &sso_account(),
-            &LocalUserInfo::default(),
-            &rest_client(&server),
-        )
-        .await
-        .expect("starts");
+        let url = start_sso_login(&sso_account(), &rest_client(&server))
+            .await
+            .expect("starts");
 
         assert_eq!(url, LOGIN_URL);
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn start_sends_the_stored_ids() {
-        let server = MockServer::start().await;
-        server
-            .register(
-                Mock::given(matchers::method("POST"))
-                    .and(matchers::path("/api/v3/auth/sso/oidc/start"))
-                    .and(matchers::body_json(json!({
-                        "userUuid": "USERUUID",
-                        "accountUuid": "ACCOUNTUUID",
-                        "keyId": "m3h6kz4qjbj5xlzp7g2vy3tq4e",
-                    })))
-                    .respond_with(
-                        ResponseTemplate::new(200)
-                            .set_body_json(json!({"authRedirect": LOGIN_URL})),
-                    )
-                    .expect(1),
-            )
-            .await;
-
-        start_sso_login(&sso_account(), &local_user_info(), &rest_client(&server))
-            .await
-            .expect("starts");
-
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn start_sends_each_stored_id_on_its_own() {
-        let server = MockServer::start().await;
-        for (key, value) in [("accountUuid", "ACCOUNTUUID"), ("keyId", "KEYID")] {
-            server
-                .register(
-                    Mock::given(matchers::method("POST"))
-                        .and(matchers::path("/api/v3/auth/sso/oidc/start"))
-                        .and(matchers::body_json(
-                            json!({"userUuid": "USERUUID", key: value}),
-                        ))
-                        .respond_with(
-                            ResponseTemplate::new(200)
-                                .set_body_json(json!({"authRedirect": LOGIN_URL})),
-                        )
-                        .expect(1),
-                )
-                .await;
-        }
-        let rest = rest_client(&server);
-
-        let only_account = LocalUserInfo {
-            account_id: Some("ACCOUNTUUID".into()),
-            ..LocalUserInfo::default()
-        };
-        let only_key = LocalUserInfo {
-            credentials_encryption_key_id: Some("KEYID".into()),
-            ..LocalUserInfo::default()
-        };
-        start_sso_login(&sso_account(), &only_account, &rest)
-            .await
-            .expect("starts");
-        start_sso_login(&sso_account(), &only_key, &rest)
-            .await
-            .expect("starts");
-
         server.verify().await;
     }
 
@@ -833,7 +623,7 @@ mod tests {
             )
             .await;
 
-        let error = start_sso_login(&sso_account(), &local_user_info(), &rest_client(&server))
+        let error = start_sso_login(&sso_account(), &rest_client(&server))
             .await
             .err();
 
@@ -939,6 +729,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn perform_rejects_a_redirect_uri_that_is_not_a_web_address() {
+        for redirect_uri in [
+            "javascript%3Aalert(1)",
+            "file%3A%2F%2F%2Fcb",
+            "ftp%3A%2F%2Facme.1password.com%2Fcb",
+            "%2F%2Facme.1password.com%2Fcb",
+            "acme.1password.com%2Fcb",
+        ] {
+            let login_url = format!(
+                "https://idp.example.com/authorize?redirect_uri={redirect_uri}&state=SECRET"
+            );
+            let ui = ScriptedUi::redirected_to("https://acme.1password.com/cb#code=c&state=s");
+
+            let error = perform_sso_login(&login_url, &ui).await.err();
+
+            assert!(
+                matches!(&error, Some(OnePasswordError::Internal(what)) if what.contains("redirect URI") && !what.contains("SECRET")),
+                "unexpected result for '{login_url}': {error:?}"
+            );
+            assert!(ui.calls().is_empty(), "'{login_url}' reached the user");
+        }
+    }
+
+    #[tokio::test]
     async fn perform_rejects_a_login_url_that_is_not_a_web_address() {
         for login_url in [
             "javascript:alert(1)//?redirect_uri=https%3A%2F%2Facme.1password.com&state=SECRET",
@@ -1039,13 +853,10 @@ mod tests {
 
         assert_eq!(session.state, "device_not_enrolled");
         assert_eq!(session.user.session_uuid, "SESSIONUUID");
-        assert_eq!(session.user.account_uuid, "ACCOUNTUUID");
-        assert_eq!(session.user.user_uuid, "USERUUID");
         assert_eq!(
             session.sso_auth.sign_in_token_details.token.as_str(),
             "SIGN_IN_TOKEN"
         );
-        assert!(session.auth.is_none());
         server.verify().await;
     }
 
@@ -1072,94 +883,25 @@ mod tests {
 
     #[test]
     fn the_sign_in_token_stays_out_of_debug_output() {
-        let output = format!("{:?}", session("found", None));
+        let output = format!("{:?}", session("device_not_enrolled"));
 
         assert!(!output.contains("SIGN_IN_TOKEN"), "leaked: {output}");
     }
 
     #[test]
-    fn a_new_device_is_not_enrolled_and_a_known_one_is_found() {
-        assert_eq!(
-            device_state(&session("device_not_enrolled", None)).ok(),
-            Some(DeviceState::NotEnrolled)
-        );
-        assert_eq!(
-            device_state(&session("found", None)).ok(),
-            Some(DeviceState::Found)
-        );
+    fn a_new_device_is_not_enrolled() {
+        assert!(require_new_device(&session("device_not_enrolled")).is_ok());
     }
 
     #[test]
     fn any_other_session_state_is_an_error() {
-        for state in ["", "Found", "device_deleted", "unknown"] {
-            let error = device_state(&session(state, None)).err();
+        for state in ["", "found", "Found", "device_deleted", "unknown"] {
+            let error = require_new_device(&session(state)).err();
 
             assert!(
                 matches!(&error, Some(OnePasswordError::Internal(what)) if what.contains(state)),
                 "unexpected result for '{state}': {error:?}"
             );
         }
-    }
-
-    #[test]
-    fn restores_the_credentials_from_the_c_written_values() {
-        let vectors = vectors().local;
-        let session = found_session(&vectors.encrypted_credential_bundle);
-
-        let bundle = restore_credentials(&session, &local_user_info()).expect("restores");
-
-        assert_eq!(
-            bundle.srpx.as_str(),
-            "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8"
-        );
-        assert_eq!(bundle.auk.kid, "mp");
-        assert_eq!(
-            bundle.auk.k.as_str(),
-            "WyICHHlP5lPigZUGZYoivbJMqgHjSti86UKwdjCryYM"
-        );
-    }
-
-    #[test]
-    fn restoring_with_another_device_key_gives_none() {
-        let other = LocalUserInfo {
-            device_key_derivation: Some(
-                encrypt_for_storage(&generate_device_key_derivation()).expect("encrypts"),
-            ),
-            ..local_user_info()
-        };
-        let session = found_session(&vectors().local.encrypted_credential_bundle);
-
-        assert!(restore_credentials(&session, &other).is_none());
-    }
-
-    #[test]
-    fn restoring_without_a_derivation_gives_none() {
-        let without = LocalUserInfo {
-            device_key_derivation: None,
-            ..local_user_info()
-        };
-        let session = found_session(&vectors().local.encrypted_credential_bundle);
-
-        assert!(restore_credentials(&session, &without).is_none());
-        assert!(restore_credentials(&session, &LocalUserInfo::default()).is_none());
-    }
-
-    #[test]
-    fn restoring_without_server_credentials_gives_none() {
-        assert!(restore_credentials(&session("found", None), &local_user_info()).is_none());
-    }
-
-    #[test]
-    fn restoring_from_broken_values_gives_none() {
-        let mut tampered = vectors().local.encrypted_credential_bundle;
-        tampered.data.replace_range(0..1, "A");
-        assert!(restore_credentials(&found_session(&tampered), &local_user_info()).is_none());
-
-        let mut broken_derivation = local_user_info();
-        if let Some(derivation) = broken_derivation.device_key_derivation.as_mut() {
-            derivation.data.replace_range(0..1, "A");
-        }
-        let session = found_session(&vectors().local.encrypted_credential_bundle);
-        assert!(restore_credentials(&session, &broken_derivation).is_none());
     }
 }

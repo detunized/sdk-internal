@@ -15,6 +15,7 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate, matchers};
 use super::{
     super::{
         device::ClientInfo,
+        keychain::MASTER_KEY_ID,
         mac::MacSigner,
         opdata::{AesKey, Encrypted, decode64_loose},
         rest::RestClient,
@@ -25,11 +26,11 @@ use super::{
 };
 
 pub(super) const USERNAME: &str = "user@example.com";
-pub(super) const DEVICE_UUID: &str = "device-uuid";
-pub(super) const USER_UUID: &str = "USERUUID";
-pub(super) const ACCOUNT_UUID: &str = "ACCOUNTUUID";
+const DEVICE_UUID: &str = "device-uuid";
+const USER_UUID: &str = "USERUUID";
+const ACCOUNT_UUID: &str = "ACCOUNTUUID";
 pub(super) const SSO_SESSION_UUID: &str = "SESSIONUUID";
-pub(super) const VAULT_UUID: &str = "VAULTUUID";
+const VAULT_UUID: &str = "VAULTUUID";
 
 /// What the identity provider step of the fake account looks like.
 pub(super) const SSO_LOGIN_URL: &str = "https://idp.example.com/authorize?client_id=abc\
@@ -59,11 +60,8 @@ pub(super) fn account_unlock_key() -> Vec<u8> {
     decode64_loose(&bundle().auk.k).expect("valid base64")
 }
 
-/// What `v3/auth/sso/oidc/verify` answers. A device the server knows gets its credentials.
-pub(super) fn verify_response(
-    state: &str,
-    encrypted_credentials: Option<&EncryptedEnvelope>,
-) -> Value {
+/// What `v3/auth/sso/oidc/verify` answers, `state` being what the server says about the device.
+pub(super) fn verify_response(state: &str) -> Value {
     json!({
         "type": state,
         "user": {
@@ -79,13 +77,6 @@ pub(super) fn verify_response(
                 "exp": "2030-01-01T00:00:00Z",
             },
         },
-        "auth": encrypted_credentials.map(|encrypted| json!({
-            "encCredentials": encrypted,
-            "v": 2,
-            "accountKeyFormat": "A3",
-            "accountKeyUuid": KEY_UUID,
-            "userAuth": {},
-        })),
     })
 }
 
@@ -101,8 +92,6 @@ struct State {
     shared_a: Mutex<Option<String>>,
     session_key: Mutex<Option<[u8; 32]>>,
     next_request_id: AtomicU32,
-    device_credentials: Mutex<Vec<Value>>,
-    device_credentials_answer: Value,
     mfa: Value,
     account: Value,
     keysets: Value,
@@ -110,21 +99,20 @@ struct State {
 }
 
 impl FakeServer {
-    /// Starts a server that answers `device_credentials_answer` when a device stores its
-    /// credentials.
-    pub(super) async fn start_with_commit_answer(device_credentials_answer: Value) -> FakeServer {
-        FakeServer::start_with(device_credentials_answer, Value::Null).await
+    /// Starts a server that signs a device in without a second factor.
+    pub(super) async fn start() -> FakeServer {
+        FakeServer::start_with(Value::Null).await
     }
 
     /// Starts a server that asks for a second factor, `mfa` being the methods it offers.
     pub(super) async fn start_with_mfa(mfa: Value) -> FakeServer {
-        FakeServer::start_with(json!({"success": 1}), mfa).await
+        FakeServer::start_with(mfa).await
     }
 
-    async fn start_with(device_credentials_answer: Value, mfa: Value) -> FakeServer {
+    async fn start_with(mfa: Value) -> FakeServer {
         let bundle = bundle();
         let srp_x = decode64_loose(&bundle.srpx).expect("valid base64");
-        let unlock_key = AesKey::new(&bundle.auk.kid, account_unlock_key());
+        let unlock_key = AesKey::new(MASTER_KEY_ID, account_unlock_key());
         let (account, keysets, items) = vault(&unlock_key);
 
         let state = Arc::new(State {
@@ -132,8 +120,6 @@ impl FakeServer {
             shared_a: Mutex::new(None),
             session_key: Mutex::new(None),
             next_request_id: AtomicU32::new(1),
-            device_credentials: Mutex::new(Vec::new()),
-            device_credentials_answer,
             mfa,
             account,
             keysets,
@@ -147,11 +133,6 @@ impl FakeServer {
         server.mock_login_after_sso().await;
         server.mock_download().await;
         server
-    }
-
-    /// Starts a server that accepts the credentials of a new device.
-    pub(super) async fn start() -> FakeServer {
-        FakeServer::start_with_commit_answer(json!({"success": 1})).await
     }
 
     /// A client for the server as it is built before the login info is known.
@@ -170,15 +151,6 @@ impl FakeServer {
     /// The address the account signs in at, which is also where its SSO API is.
     pub(super) fn sign_in_address(&self) -> String {
         format!("http://{}", self.mock.address())
-    }
-
-    /// The decrypted requests that stored a device's credentials.
-    pub(super) fn device_credentials(&self) -> Vec<Value> {
-        self.state
-            .device_credentials
-            .lock()
-            .expect("not poisoned")
-            .clone()
     }
 
     /// The paths of the requests received so far, oldest first.
@@ -214,13 +186,13 @@ impl FakeServer {
             .await;
     }
 
-    /// `v3/auth/sso/oidc/start`, which has to be sent `body`.
-    pub(super) async fn mock_sso_start(&self, body: Value) {
+    /// `v3/auth/sso/oidc/start`, which has to be sent the user and nothing else.
+    pub(super) async fn mock_sso_start(&self) {
         self.mock
             .register(
                 Mock::given(matchers::method("POST"))
                     .and(matchers::path("/api/v3/auth/sso/oidc/start"))
-                    .and(matchers::body_json(body))
+                    .and(matchers::body_json(json!({"userUuid": USER_UUID})))
                     .respond_with(
                         ResponseTemplate::new(200)
                             .set_body_json(json!({"authRedirect": SSO_LOGIN_URL})),
@@ -302,14 +274,6 @@ impl FakeServer {
                     .respond_with(move |request: &Request| state.complete_auth(request)),
             )
             .await;
-
-        let state = self.state.clone();
-        self.mock
-            .register(
-                with_session_id("POST", "/api/v3/user/devicecredentials")
-                    .respond_with(move |request: &Request| state.store_device_credentials(request)),
-            )
-            .await;
     }
 
     /// The account, its keysets and the items of its vault.
@@ -388,20 +352,6 @@ impl State {
         }
 
         seal(&key, &json!({"mfa": self.mfa}))
-    }
-
-    /// `v3/user/devicecredentials`: keeps what a device stores and answers as told.
-    fn store_device_credentials(&self, request: &Request) -> ResponseTemplate {
-        match self.decrypt_signed_request(request) {
-            Ok((_, received)) => {
-                self.device_credentials
-                    .lock()
-                    .expect("not poisoned")
-                    .push(received);
-                ResponseTemplate::new(200).set_body_json(&self.device_credentials_answer)
-            }
-            Err(why) => reject(why),
-        }
     }
 
     /// Answers `body`, encrypted with the session key, to a signed request.

@@ -75,12 +75,12 @@ impl From<Stop> for OnePasswordError {
     }
 }
 
-/// Enrolls this device and returns the credential bundle an enrolled device shared, together with
-/// the enrollment uuid.
+/// Enrolls this device and returns the credential bundle an enrolled device shared.
 ///
 /// The context is closed with `end_enrollment` when this ends, unless the future is dropped first.
-/// Cancelling, from the UI or at the verification code prompt, also tells the server, so the
-/// approving device stops waiting.
+/// An enrollment that is canceled, from the UI or at the verification code prompt, or that fails
+/// after the server handed out its uuid is also canceled on the server, so the approving device
+/// stops waiting.
 pub(super) async fn enroll_device(
     username: &str,
     sign_in_address: &str,
@@ -88,7 +88,7 @@ pub(super) async fn enroll_device(
     ui: &dyn SsoUi,
     rest: &RestClient,
     timing: &Timing,
-) -> Result<(CredentialBundle, String), OnePasswordError> {
+) -> Result<CredentialBundle, OnePasswordError> {
     let context = ui.begin_sso_enrollment().await;
     let context = &*context;
     let mut enrollment_uuid = None;
@@ -118,7 +118,8 @@ pub(super) async fn enroll_device(
         Err(Stop::Failed(_)) => SsoEnrollmentResult::Failed,
     };
 
-    if matches!(outcome, Err(Stop::Canceled))
+    // A denied enrollment is already over on the server.
+    if matches!(outcome, Err(Stop::Canceled | Stop::Failed(_)))
         && let Some(enrollment_uuid) = &enrollment_uuid
     {
         cancel_enrollment(sign_in_token, enrollment_uuid, rest).await;
@@ -138,7 +139,7 @@ async fn enroll(
     rest: &RestClient,
     timing: &Timing,
     started: &mut Option<String>,
-) -> Result<(CredentialBundle, String), Stop> {
+) -> Result<CredentialBundle, Stop> {
     // Starting signals the enrolled devices to prepare for handing the credentials over.
     context
         .update_status(
@@ -200,7 +201,7 @@ async fn enroll(
     context
         .update_status(EnrollmentStatus::Completing, "Completing enrollment")
         .await;
-    Ok((credential_bundle, enrollment_uuid.clone()))
+    Ok(credential_bundle)
 }
 
 /// Denial ends the enrollment, any other status is up to the caller.
@@ -509,7 +510,7 @@ mod tests {
         vectors: &CpaceVectors,
         ui: &ScriptedUi,
         timing: &Timing,
-    ) -> Result<(CredentialBundle, String), OnePasswordError> {
+    ) -> Result<CredentialBundle, OnePasswordError> {
         enroll_device(
             &vectors.username,
             &vectors.sign_in_address,
@@ -521,7 +522,7 @@ mod tests {
         .await
     }
 
-    fn assert_denied(result: Result<(CredentialBundle, String), OnePasswordError>) {
+    fn assert_denied(result: Result<CredentialBundle, OnePasswordError>) {
         assert!(matches!(
             result.err(),
             Some(OnePasswordError::Canceled(message)) if message.contains("denied")
@@ -543,11 +544,10 @@ mod tests {
         mock_cancel(&server, &vectors, 0).await;
         let (ui, script) = scripted(code(&vectors.verification_code));
 
-        let (bundle, enrollment_uuid) = run_enrollment(&server, &vectors, &ui, &quick_timing())
+        let bundle = run_enrollment(&server, &vectors, &ui, &quick_timing())
             .await
             .expect("the enrollment succeeds");
 
-        assert_eq!(enrollment_uuid, vectors.enrollment_uuid);
         assert_eq!(*bundle.srpx, "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8");
         assert_eq!(
             script.take_events(),
@@ -582,7 +582,7 @@ mod tests {
                     .expect(1),
             )
             .await;
-        mock_cancel(&server, &vectors, 0).await;
+        mock_cancel(&server, &vectors, 1).await;
         let (ui, script) = scripted(code(&vectors.verification_code));
 
         let error = run_enrollment(&server, &vectors, &ui, &quick_timing())
@@ -734,7 +734,7 @@ mod tests {
                     .expect(5),
             )
             .await;
-        mock_cancel(&server, &vectors, 0).await;
+        mock_cancel(&server, &vectors, 1).await;
         let (ui, script) = scripted(Prompt::Pending);
         let timing = Timing {
             enrollment_poll_timeout: Duration::from_millis(5),
@@ -881,7 +881,7 @@ mod tests {
             vec![reports("WAITING_FOR_CODE"), reports("SOMETHING_NEW")],
         )
         .await;
-        mock_cancel(&server, &vectors, 0).await;
+        mock_cancel(&server, &vectors, 1).await;
         let (ui, script) = scripted(Prompt::Pending);
 
         let error = run_enrollment(&server, &vectors, &ui, &quick_timing())

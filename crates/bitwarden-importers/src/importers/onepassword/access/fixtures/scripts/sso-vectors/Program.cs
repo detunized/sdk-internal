@@ -65,22 +65,6 @@ var decryptedEnroll = Client.DecryptCredentials(encryptedEnroll, exchangeKey);
 if (decryptedEnroll.SrpX != "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8")
     throw new Exception("enroll round trip failed");
 
-// Local storage
-var derivation = new Client.DeviceKeyDerivation("m3h6kz4qjbj5xlzp7g2vy3tq4e", Seq(32, 10), Seq(48, 50));
-var deviceKey = Client.DeriveDeviceKey(derivation);
-var storageIv = Seq(12, 30);
-var storedDerivation = Client.EncryptForStorage(derivation, storageIv).ToModel();
-var roundTrip = Client.DecryptDeviceKey(storedDerivation);
-if (!roundTrip.Key.SequenceEqual(derivation.Key))
-    throw new Exception("storage round trip failed");
-
-var localIv = Seq(12, 40);
-var serializedBundle = JsonSerializer.SerializeToUtf8Bytes(Client.DecryptCredentials(encryptedEnroll, exchangeKey));
-var encryptedLocal = deviceKey.Encrypt(serializedBundle, localIv, "1P_SSO_CREDENTIAL_BUNDLE:LOCAL2"u8.ToArray()).ToModel();
-var restored = Client.DecryptCredentialBundle(encryptedLocal, deviceKey);
-if (restored.Auk.KeyId != "mp")
-    throw new Exception("local round trip failed");
-
 var leb = new Dictionary<string, string>();
 foreach (var len in new[] { 0, 1, 127, 128, 300, 16383, 16384 })
 {
@@ -116,25 +100,6 @@ var output = new Dictionary<string, object>
         ["exchange_key"] = Hex(exchangeKey),
         ["credential_bundle_json"] = bundleJson,
         ["encrypted_credentials"] = encryptedEnroll,
-    },
-    ["local"] = new Dictionary<string, object>
-    {
-        ["device_key_id"] = derivation.Id,
-        ["device_key_seed"] = Hex(derivation.Key),
-        ["device_key_salt"] = Hex(derivation.Salt),
-        ["device_key"] = Hex(deviceKey.Key),
-        ["stored_device_key_derivation"] = storedDerivation,
-        ["serialized_credential_bundle"] = Encoding.UTF8.GetString(serializedBundle),
-        ["encrypted_credential_bundle"] = encryptedLocal,
-        ["local_user_info_json"] = JsonSerializer.Serialize(
-            new Dictionary<string, object>
-            {
-                ["userId"] = "USERUUID",
-                ["accountId"] = "ACCOUNTUUID",
-                ["credentialsEncryptionKeyId"] = derivation.Id,
-                ["deviceKeyDerivation"] = storedDerivation,
-            }
-        ),
     },
     ["leb128_prefix"] = leb,
     ["redirect"] = new Dictionary<string, object>

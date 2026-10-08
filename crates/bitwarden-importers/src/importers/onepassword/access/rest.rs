@@ -175,24 +175,19 @@ impl RestClient {
         params: Value,
         session_key: &AesKey,
     ) -> Result<T, OnePasswordError> {
-        let body = encrypt_params(&params, session_key)?;
+        let payload = serde_json::to_vec(&params)
+            .map_err(|_| OnePasswordError::Internal("failed to serialize request".into()))?;
+
+        let mut iv = [0u8; IV_SIZE];
+        bitwarden_random::rng().fill_bytes(&mut iv);
+        let envelope = session_key.encrypt(&payload, &iv)?;
+        let body = serde_json::to_value(&envelope)
+            .map_err(|_| OnePasswordError::Internal("failed to serialize envelope".into()))?;
 
         let response = self
             .request_json(Method::POST, endpoint, Some(&body))
             .await?;
         decrypt_response(response, session_key)
-    }
-
-    /// Encrypts `params` like `post_encrypted_json`, but parses the response as plain JSON: some
-    /// endpoints answer an encrypted request with an unencrypted body.
-    pub(super) async fn post_encrypted_json_plain<T: DeserializeOwned>(
-        &self,
-        endpoint: &str,
-        params: Value,
-        session_key: &AesKey,
-    ) -> Result<T, OnePasswordError> {
-        let body = encrypt_params(&params, session_key)?;
-        self.request_json(Method::POST, endpoint, Some(&body)).await
     }
 
     /// Sends a request and parses the JSON response.
@@ -265,18 +260,6 @@ fn check_status(endpoint: &str, status: StatusCode, body: &str) -> Result<(), On
     )
 }
 
-/// Serializes and encrypts `params` into an opdata request envelope.
-fn encrypt_params(params: &Value, session_key: &AesKey) -> Result<Value, OnePasswordError> {
-    let payload = serde_json::to_vec(params)
-        .map_err(|_| OnePasswordError::Internal("failed to serialize request".into()))?;
-
-    let mut iv = [0u8; IV_SIZE];
-    bitwarden_random::rng().fill_bytes(&mut iv);
-    let envelope = session_key.encrypt(&payload, &iv)?;
-    serde_json::to_value(&envelope)
-        .map_err(|_| OnePasswordError::Internal("failed to serialize envelope".into()))
-}
-
 /// Decrypts an opdata envelope and parses its JSON plaintext.
 fn decrypt_response<T: DeserializeOwned>(
     envelope: EncryptedEnvelope,
@@ -339,10 +322,7 @@ mod tests {
     use serde_json::json;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
-    use super::{
-        super::{opdata::decode64_loose, wire::SuccessStatus},
-        *,
-    };
+    use super::{super::opdata::decode64_loose, *};
 
     #[derive(Debug, Deserialize)]
     struct Greeting {
@@ -734,46 +714,6 @@ mod tests {
             .expect("the body is not empty");
 
         assert_eq!(response.hello, "you");
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn post_encrypted_json_plain_encrypts_params_and_reads_a_plain_response() {
-        let key = session_key();
-        let server = MockServer::start().await;
-        server
-            .register(
-                Mock::given(matchers::path("/api/v3/user/devicecredentials"))
-                    .and(matchers::method("POST"))
-                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"success": 1})))
-                    .expect(1),
-            )
-            .await;
-
-        let response: SuccessStatus = client(&server)
-            .post_encrypted_json_plain(
-                "v3/user/devicecredentials",
-                json!({"keyId": "SESSION", "enrollmentUuid": "UUID"}),
-                &key,
-            )
-            .await
-            .expect("request succeeds");
-        assert_eq!(response.success, 1);
-
-        let requests = server
-            .received_requests()
-            .await
-            .expect("requests are recorded");
-        let envelope: EncryptedEnvelope =
-            serde_json::from_slice(&requests[0].body).expect("request body is an envelope");
-        let plaintext = key
-            .decrypt(&Encrypted::parse(&envelope).expect("envelope parses"))
-            .expect("session key decrypts the request");
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&plaintext).expect("plaintext is JSON"),
-            json!({"keyId": "SESSION", "enrollmentUuid": "UUID"})
-        );
-
         server.verify().await;
     }
 }

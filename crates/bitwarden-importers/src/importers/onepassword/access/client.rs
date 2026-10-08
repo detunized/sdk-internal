@@ -15,10 +15,7 @@ use super::{
     opdata::{AesKey, Encrypted},
     rest::RestClient,
     session::Session,
-    sso::{
-        Timing, sso_login,
-        ui::{SecureStorage, SsoUi},
-    },
+    sso::{Timing, sso_login, ui::SsoUi},
     two_factor::TwoFactorUi,
     wire::{
         AccountInfo, EncryptedEnvelope, KeysetsInfo, VaultAccess, VaultAttributes, VaultItem,
@@ -68,17 +65,16 @@ impl Client {
 
     /// Opens the account by signing in with single sign-on and decrypting every accessible vault.
     ///
-    /// `ui` takes the user through the identity provider and, on a device the account does not
-    /// trust yet, through its enrollment. `storage` keeps what the device needs to skip the
-    /// enrollment the next time.
+    /// `ui` takes the user through the identity provider and the enrollment of the device, which
+    /// is new to the account every time.
     pub async fn open_account_sso(
         &self,
         mut credentials: SsoCredentials,
         ui: &dyn SsoUi,
-        storage: &dyn SecureStorage,
     ) -> Result<DownloadedAccount, OnePasswordError> {
         credentials.validate()?;
-        let client_info = ClientInfo::for_desktop(&credentials.device_uuid);
+        let device_uuid = super::device::generate_device_uuid();
+        let client_info = ClientInfo::for_desktop(&device_uuid);
         let rest = RestClient::new(
             self.http.clone(),
             format!("https://{}/api", credentials.sign_in_address),
@@ -87,15 +83,8 @@ impl Client {
             &client_info.op_user_agent,
         )?;
 
-        let (session, master_key) = sso_login(
-            &credentials,
-            &client_info,
-            ui,
-            storage,
-            &rest,
-            &Timing::default(),
-        )
-        .await?;
+        let (session, master_key) =
+            sso_login(&credentials, &client_info, ui, &rest, &Timing::default()).await?;
         download_vaults(MasterKey::Known(master_key), &session).await
     }
 

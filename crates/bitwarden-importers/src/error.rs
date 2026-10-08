@@ -32,8 +32,6 @@ pub enum ImportError {
     OnePasswordNetwork(String),
     #[error("The data 1Password returned could not be read")]
     OnePasswordDecryption,
-    #[error("The secure storage of the 1Password sign-in failed: {0}")]
-    OnePasswordSecureStorage(String),
 
     #[error(transparent)]
     NotAuthenticated(#[from] bitwarden_core::NotAuthenticatedError),

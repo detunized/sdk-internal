@@ -773,12 +773,8 @@ mod tests {
             decrypt_credentials(&vectors.encrypted_credentials, &hex(&vectors.exchange_key))
                 .expect("decrypts");
 
-        assert_eq!(
-            serde_json::to_value(&bundle).expect("serializes"),
-            serde_json::from_str::<Value>(&vectors.credential_bundle_json).expect("valid json")
-        );
         assert_eq!(*bundle.srpx, "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8");
-        assert_eq!(bundle.auk.kid, "mp");
+        assert_eq!(*bundle.auk.k, "WyICHHlP5lPigZUGZYoivbJMqgHjSti86UKwdjCryYM");
     }
 
     /// The enrolled device's first message is the one of the vectors, when it is told the same.

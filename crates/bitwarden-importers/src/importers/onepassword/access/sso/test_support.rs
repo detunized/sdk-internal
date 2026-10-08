@@ -2,12 +2,11 @@
 //! SSO submodules.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use async_trait::async_trait;
 use bitwarden_api_base::new_http_client;
 use data_encoding::{BASE64, BASE64URL_NOPAD, HEXLOWER};
 use serde::Deserialize;
@@ -18,8 +17,6 @@ use super::{
     super::{rest::RestClient, wire::EncryptedEnvelope},
     Timing,
     cpace::{Ad, enrolled_device_msg_a, expected_tag_b, parse_msg_a, share_credentials},
-    local::credentials_name,
-    ui::SecureStorage,
 };
 
 pub(super) const SIGN_IN_TOKEN: &str = "SIGN_IN_TOKEN";
@@ -28,22 +25,8 @@ pub(super) const SIGN_IN_TOKEN: &str = "SIGN_IN_TOKEN";
 #[derive(Deserialize)]
 pub(super) struct Vectors {
     pub cpace: CpaceVectors,
-    pub local: LocalVectors,
     pub leb128_prefix: BTreeMap<usize, String>,
     pub redirect: RedirectVectors,
-}
-
-/// The stored values of a device that was enrolled before. Binary values are lowercase hex.
-#[derive(Deserialize)]
-pub(super) struct LocalVectors {
-    pub device_key_id: String,
-    pub device_key_seed: String,
-    pub device_key_salt: String,
-    pub device_key: String,
-    pub stored_device_key_derivation: EncryptedEnvelope,
-    pub serialized_credential_bundle: String,
-    pub encrypted_credential_bundle: EncryptedEnvelope,
-    pub local_user_info_json: String,
 }
 
 /// Where the identity provider sends the browser back to.
@@ -306,86 +289,4 @@ pub(super) async fn mock_enrolled_device_for_any_client(
         ResponseTemplate::new(200).set_body_json(json!({ "encCreds": encrypted }))
     };
     mock_empty_then_answer(server, path(vectors, "share/credentials"), share).await;
-}
-
-/// An in-memory [`SecureStorage`] that remembers what was written to the SSO credentials, and can
-/// be told to fail.
-#[derive(Default)]
-pub(super) struct RecordingStorage {
-    values: Mutex<HashMap<String, String>>,
-    writes: Mutex<Vec<String>>,
-    fail_loads: bool,
-    fail_stores: bool,
-}
-
-impl RecordingStorage {
-    /// A storage that already holds `json` as the SSO credentials of `user_uuid`.
-    pub(super) fn holding(user_uuid: &str, json: &str) -> RecordingStorage {
-        let storage = RecordingStorage::default();
-        storage
-            .values
-            .lock()
-            .expect("not poisoned")
-            .insert(credentials_name(user_uuid), json.into());
-        storage
-    }
-
-    /// A storage that cannot be read.
-    pub(super) fn failing_loads() -> RecordingStorage {
-        RecordingStorage {
-            fail_loads: true,
-            ..RecordingStorage::default()
-        }
-    }
-
-    /// A storage that cannot be written.
-    pub(super) fn failing_stores() -> RecordingStorage {
-        RecordingStorage {
-            fail_stores: true,
-            ..RecordingStorage::default()
-        }
-    }
-
-    /// What is stored as the SSO credentials of `user_uuid` now.
-    pub(super) fn credentials(&self, user_uuid: &str) -> Option<String> {
-        self.values
-            .lock()
-            .expect("not poisoned")
-            .get(&credentials_name(user_uuid))
-            .cloned()
-    }
-
-    /// Every value written to the SSO credentials, oldest first.
-    pub(super) fn writes(&self) -> Vec<String> {
-        self.writes.lock().expect("not poisoned").clone()
-    }
-}
-
-#[async_trait]
-impl SecureStorage for RecordingStorage {
-    async fn load_string(&self, name: &str) -> Result<Option<String>, String> {
-        if self.fail_loads {
-            return Err("the keychain is locked".into());
-        }
-        Ok(self.values.lock().expect("not poisoned").get(name).cloned())
-    }
-
-    async fn store_string(&self, name: &str, value: String) -> Result<(), String> {
-        assert!(
-            name.starts_with("sso-credentials-"),
-            "nothing else is stored"
-        );
-        if self.fail_stores {
-            return Err("the disk is full".into());
-        }
-        self.writes
-            .lock()
-            .expect("not poisoned")
-            .push(value.clone());
-        self.values
-            .lock()
-            .expect("not poisoned")
-            .insert(name.into(), value);
-        Ok(())
-    }
 }

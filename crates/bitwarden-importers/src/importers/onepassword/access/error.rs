@@ -40,11 +40,6 @@ pub enum OnePasswordError {
     #[error("canceled: {0}")]
     Canceled(String),
 
-    /// The secure storage callback failed. The message comes from the storage implementation, which
-    /// must keep stored values out of it.
-    #[error("secure storage failed: {0}")]
-    SecureStorage(String),
-
     /// Decryption of a server payload failed.
     #[error("decryption failed")]
     Decryption,
