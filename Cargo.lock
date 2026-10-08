@@ -1000,7 +1000,6 @@ dependencies = [
  "keepass",
  "p256 0.14.0",
  "pbkdf2",
- "percent-encoding",
  "rand 0.10.2",
  "reqwest",
  "rsa",

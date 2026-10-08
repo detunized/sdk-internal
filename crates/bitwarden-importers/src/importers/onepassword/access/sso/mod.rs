@@ -1,11 +1,10 @@
 //! Login with single sign-on: enroll or restore a trusted device, then sign in with the
 //! credentials it provides.
 
-use std::{borrow::Cow, time::Duration};
+use std::time::Duration;
 
-use percent_encoding::percent_decode_str;
 use serde_json::json;
-use url::Url;
+use url::{Url, form_urlencoded};
 use zeroize::Zeroizing;
 
 use self::{
@@ -513,28 +512,18 @@ async fn commit_device(
     .await
 }
 
-/// The percent-decoded value of the first parameter called `name` in the query or the fragment of
-/// `url`. A missing, empty or undecodable value is `None`.
-///
-/// Keys match exactly, so `session_state` is not `state`. Only the escapes are decoded and a `+`
-/// stays a plus, like .NET's `Uri.UnescapeDataString` does. Form decoding would make it a space.
+/// The form-decoded value of the first parameter called `name` in the query or the fragment of
+/// `url`, as OAuth encodes the redirect. A missing or empty value is `None`.
 fn url_parameter(url: &str, name: &str) -> Option<String> {
     let (url, fragment) = url.split_once('#').unwrap_or((url, ""));
     let query = url.split_once('?').map_or("", |(_, query)| query);
 
-    let raw = [query, fragment]
+    [query, fragment]
         .into_iter()
-        .flat_map(|part| part.split('&'))
-        .find_map(|pair| {
-            let (key, value) = pair.split_once('=')?;
-            (key == name).then_some(value)
-        })?;
-
-    percent_decode_str(raw)
-        .decode_utf8()
-        .ok()
+        .flat_map(|part| form_urlencoded::parse(part.as_bytes()))
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.into_owned())
         .filter(|value| !value.is_empty())
-        .map(Cow::into_owned)
 }
 
 #[cfg(test)]
@@ -901,13 +890,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn perform_decodes_an_escaped_plus_and_keeps_a_literal_one() {
+    async fn perform_form_decodes_the_redirect() {
         let ui = ScriptedUi::redirected_to("https://acme.1password.com/cb#code=a%2Bb&state=c+d");
 
         let (code, state) = perform_sso_login(LOGIN_URL, &ui).await.expect("performs");
 
         assert_eq!(code, "a+b");
-        assert_eq!(state, "c+d");
+        assert_eq!(state, "c d");
     }
 
     #[tokio::test]
@@ -918,7 +907,6 @@ mod tests {
             ("https://acme.1password.com/cb#code=c0de", "state"),
             ("https://acme.1password.com/cb#code=c0de&state=", "state"),
             ("https://acme.1password.com/cb", "code"),
-            ("https://acme.1password.com/cb#code=%FF&state=st4te", "code"),
         ] {
             let error = perform_sso_login(LOGIN_URL, &ScriptedUi::redirected_to(url))
                 .await
@@ -1006,10 +994,10 @@ mod tests {
     }
 
     #[test]
-    fn url_parameters_decode_escapes_only() {
+    fn url_parameters_are_form_decoded() {
         assert_eq!(
             url_parameter("u?a=%E2%9C%93+%2B%3D%26", "a").as_deref(),
-            Some("\u{2713}++=&")
+            Some("\u{2713} +=&")
         );
     }
 

@@ -41,7 +41,7 @@ each one into a Bitwarden folder. 1P doesn't have folders, only tags.
   fixed key the 1Password web app uses. Each user has a record of their own in it, so one storage
   can serve several accounts. A storage that fails to read or write fails the import. The device
   uuid has to stay the same between logins, otherwise every login enrolls the device again
-- Added `curve25519-dalek` and `percent-encoding` to the workspace
+- Added `curve25519-dalek` to the workspace
 
 ## TODO
 

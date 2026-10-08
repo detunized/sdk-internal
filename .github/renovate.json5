@@ -86,13 +86,7 @@
     },
     {
       matchManagers: ["cargo"],
-      matchPackageNames: [
-        "crypto-bigint",
-        "curve25519-dalek",
-        "icu_normalizer",
-        "keepass",
-        "percent-encoding",
-      ],
+      matchPackageNames: ["crypto-bigint", "curve25519-dalek", "icu_normalizer", "keepass"],
       commitMessagePrefix: "[deps] Tools:",
       reviewers: ["team:team-tools-dev"],
     },
