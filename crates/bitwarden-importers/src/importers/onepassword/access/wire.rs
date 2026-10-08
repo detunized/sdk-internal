@@ -3,7 +3,10 @@
 //! These carry only the fields the client reads. serde ignores everything else on the wire, so the
 //! structs stay small while remaining forward compatible with the full server responses.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 /// The JSON "opdata" envelope as it appears on the wire.
 ///
@@ -90,8 +93,15 @@ impl KeyDerivationInfo {
 }
 
 /// Response from `v2/auth/methods`.
+///
+/// `userUuid` and `signInAddress` are only needed for an SSO login, and the server may leave them
+/// out.
 #[derive(Debug, Deserialize)]
 pub(super) struct LoginInfo {
+    #[serde(rename = "userUuid")]
+    pub user_uuid: Option<String>,
+    #[serde(rename = "signInAddress")]
+    pub sign_in_address: Option<String>,
     #[serde(rename = "authMethods")]
     pub auth_methods: Vec<AuthMethod>,
 }
@@ -101,6 +111,66 @@ pub(super) struct LoginInfo {
 pub(super) struct AuthMethod {
     #[serde(rename = "type")]
     pub kind: String,
+}
+
+/// Response from `v3/auth/sso/oidc/start`.
+#[derive(Debug, Deserialize)]
+pub(super) struct SsoLoginUrl {
+    #[serde(rename = "authRedirect")]
+    pub auth_redirect: String,
+}
+
+/// Response from `v3/auth/sso/oidc/verify`.
+///
+/// `type` says whether the server knows this device: `found` normally comes with `auth`,
+/// `device_not_enrolled` without.
+#[derive(Debug, Deserialize)]
+pub(super) struct SsoSession {
+    #[serde(rename = "type")]
+    pub state: String,
+    pub user: SsoUser,
+    #[serde(rename = "ssoAuth")]
+    pub sso_auth: SsoAuth,
+    pub auth: Option<SsoDeviceAuth>,
+}
+
+/// The user an SSO login authenticated.
+#[derive(Debug, Deserialize)]
+pub(super) struct SsoUser {
+    /// Goes into the header of every request that follows.
+    #[serde(rename = "sessionUuid")]
+    pub session_uuid: String,
+    #[serde(rename = "accountUuid")]
+    pub account_uuid: String,
+    #[serde(rename = "userUuid")]
+    pub user_uuid: String,
+}
+
+/// What the identity provider login earned: a token to sign in with.
+#[derive(Debug, Deserialize)]
+pub(super) struct SsoAuth {
+    #[serde(rename = "signInTokenDetails")]
+    pub sign_in_token_details: SignInTokenDetails,
+}
+
+/// The sign-in token, a bearer credential for the login after the SSO step.
+#[derive(Deserialize)]
+pub(super) struct SignInTokenDetails {
+    pub token: Zeroizing<String>,
+}
+
+impl fmt::Debug for SignInTokenDetails {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignInTokenDetails").finish_non_exhaustive()
+    }
+}
+
+/// The credentials of an enrolled device, as the server keeps them for it.
+#[derive(Debug, Deserialize)]
+pub(super) struct SsoDeviceAuth {
+    /// The credential bundle, encrypted with the device key that never leaves the device.
+    #[serde(rename = "encCredentials")]
+    pub encrypted_credentials: EncryptedEnvelope,
 }
 
 /// Response from `v3/auth/start`.
@@ -131,7 +201,7 @@ pub(super) struct UserAuth {
     pub salt: String,
 }
 
-/// Response from `v1/device` and `v1/device/{uuid}/reauthorize`.
+/// Response from `v1/device`, `v1/device/{uuid}/reauthorize` and the CPace `msgb` and `tagb`.
 #[derive(Debug, Deserialize)]
 pub(super) struct SuccessStatus {
     pub success: i32,
@@ -199,6 +269,108 @@ impl MfaInfo {
 #[derive(Debug, Deserialize)]
 pub(super) struct BasicMfa {
     pub enabled: bool,
+}
+
+/// Response from `v3/device/enrollments`.
+#[derive(Debug, Deserialize)]
+pub(super) struct SsoEnrollInfo {
+    #[serde(rename = "enrollmentUuid")]
+    pub enrollment_uuid: String,
+}
+
+/// Response from `v3/device/enrollments/status`.
+#[derive(Debug, Deserialize)]
+pub(super) struct SsoEnrollStatus {
+    pub status: String,
+}
+
+/// Response from `v3/device/enrollments/{uuid}/cpace/msga`.
+#[derive(Debug, Deserialize)]
+pub(super) struct CpaceMsgA {
+    pub msga: String,
+}
+
+/// The CPace message from the enrolled device, base64 encoded inside the `msga` response of
+/// `v3/device/enrollments/{uuid}/cpace/msga`.
+#[derive(Debug, Deserialize)]
+pub(super) struct MsgA {
+    pub ya: String,
+    pub ad: MsgAAd,
+}
+
+/// The associated data of a CPace message.
+///
+/// `session_id` is a JSON array of byte values, so an element above 255 fails to parse.
+#[derive(Debug, Deserialize)]
+pub(super) struct MsgAAd {
+    pub version: i32,
+    pub salt: String,
+    pub session_id: Vec<u8>,
+}
+
+/// Response from `v3/device/enrollments/{uuid}/cpace/taga`.
+#[derive(Debug, Deserialize)]
+pub(super) struct CpaceTagA {
+    pub taga: String,
+}
+
+/// Response from `v3/device/enrollments/{uuid}/share/credentials`.
+#[derive(Debug, Deserialize)]
+pub(super) struct SharedCredentials {
+    #[serde(rename = "encCreds")]
+    pub encrypted_credentials: EncryptedEnvelope,
+}
+
+/// The credentials the enrolled device hands over, decrypted from the `encCreds` of
+/// `v3/device/enrollments/{uuid}/share/credentials`.
+///
+/// Deliberately not `Debug`: it holds the SRP `x` and the account unlock key. The secrets are
+/// `Zeroizing` field by field, so a bundle that fails to parse halfway is wiped too.
+#[derive(Deserialize, Serialize)]
+pub(super) struct CredentialBundle {
+    pub srpx: Zeroizing<String>,
+    pub auk: Auk,
+}
+
+/// The account unlock key in the shape of a JWK. Deliberately not `Debug`.
+#[derive(Deserialize, Serialize)]
+pub(super) struct Auk {
+    pub alg: String,
+    pub k: Zeroizing<String>,
+    pub kty: String,
+    pub kid: String,
+}
+
+/// The SSO credentials record kept in secure local storage, one per 1Password user.
+///
+/// Every field is optional, the way the C# client writes it: a missing or unreadable record means
+/// there are no local credentials, and one is only worth restoring once its derivation decrypts.
+///
+/// Not `Debug`: the fixed obfuscation key opens the derivation, so it is as secret as the seed.
+#[derive(Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LocalUserInfo {
+    /// Checked against the user being signed in, so another user's credentials are never
+    /// restored.
+    pub user_id: Option<String>,
+    /// Sent to the server when the SSO login starts.
+    pub account_id: Option<String>,
+    /// The device key id, reported to the server alongside the encrypted credentials. The key
+    /// itself stays on the device.
+    pub credentials_encryption_key_id: Option<String>,
+    /// The device key derivation parameters, obfuscated with a fixed key.
+    pub device_key_derivation: Option<EncryptedEnvelope>,
+}
+
+/// The device key derivation parameters as they are serialized into local storage.
+///
+/// `k` and `s` are URL-safe base64 without padding. Deliberately not `Debug`: `k` is the seed the
+/// device key is derived from.
+#[derive(Deserialize, Serialize)]
+pub(super) struct DeviceKeyDerivation {
+    pub kid: String,
+    pub k: Zeroizing<String>,
+    pub s: Zeroizing<String>,
 }
 
 /// A server error body.

@@ -14,11 +14,19 @@ const BASE32_ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 const DEVICE_UUID_LENGTH: usize = 26;
 const DEVICE_ENDPOINT: &str = "v1/device";
 
+/// Shown in the account's device list, so it names us rather than a 1Password client.
+const DEVICE_NAME: &str = "Bitwarden";
+
+/// The `model` of the SSO device descriptors is this crate's version, the way the C# library
+/// reports its host application's version.
+const SSO_DEVICE_MODEL: &str = env!("CARGO_PKG_VERSION");
+
 /// Generates a 26-character 1Password device id from the lowercase base32 alphabet.
 ///
-/// A fresh id per import is expected: the login registers it with the account and nothing uses it
-/// afterwards.
-pub(super) fn generate_device_uuid() -> String {
+/// A password login takes a fresh one each time: it registers the id with the account and nothing
+/// uses it afterwards. An SSO login instead identifies an enrolled device by the id, so the caller
+/// generates it once and persists it.
+pub fn generate_device_uuid() -> String {
     let mut rng = bitwarden_random::rng();
     (0..DEVICE_UUID_LENGTH)
         .map(|_| BASE32_ALPHABET[(rng.next_u32() % 32) as usize] as char)
@@ -65,9 +73,36 @@ impl ClientInfo {
             "uuid": self.device_uuid,
             "clientName": self.client_name,
             "clientVersion": self.client_version,
-            // Shown in the account's device list, so it names us rather than a 1Password client.
-            "name": "Bitwarden",
+            "name": DEVICE_NAME,
             "osName": PLATFORM.os_name,
+            "userAgent": self.user_agent,
+        })
+    }
+
+    /// The device descriptor of `v3/auth/sso/oidc/verify`.
+    pub(super) fn sso_verify_device_body(&self) -> Value {
+        json!({
+            "uuid": self.device_uuid,
+            "clientName": self.client_name,
+            "clientVersion": self.client_version,
+            "osName": PLATFORM.os_name,
+            "osVersion": "",
+            "name": DEVICE_NAME,
+            "model": SSO_DEVICE_MODEL,
+        })
+    }
+
+    /// The device descriptor inside the `v2/auth/complete` of an SSO login, which sends what the
+    /// verify request does and the user agent too.
+    pub(super) fn sso_complete_device_body(&self) -> Value {
+        json!({
+            "uuid": self.device_uuid,
+            "clientName": self.client_name,
+            "clientVersion": self.client_version,
+            "name": DEVICE_NAME,
+            "model": SSO_DEVICE_MODEL,
+            "osName": PLATFORM.os_name,
+            "osVersion": "",
             "userAgent": self.user_agent,
         })
     }
@@ -115,6 +150,7 @@ fn check_success(
 #[cfg(test)]
 mod tests {
     use bitwarden_api_base::new_http_client;
+    use serde_json::json;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
     use super::*;
@@ -155,6 +191,60 @@ mod tests {
         assert_eq!(body["clientVersion"], "81210036");
         assert_eq!(body["osName"], PLATFORM.os_name);
         assert_eq!(body["clientName"], format!("1Password for {}", PLATFORM.os));
+    }
+
+    #[test]
+    fn sso_verify_device_body_mirrors_the_csharp_client() {
+        let info = ClientInfo::for_desktop("device-uuid");
+
+        assert_eq!(
+            info.sso_verify_device_body(),
+            json!({
+                "uuid": "device-uuid",
+                "clientName": format!("1Password for {}", PLATFORM.os),
+                "clientVersion": "81210036",
+                "osName": PLATFORM.os_name,
+                "osVersion": "",
+                "name": "Bitwarden",
+                "model": env!("CARGO_PKG_VERSION"),
+            })
+        );
+    }
+
+    #[test]
+    fn sso_complete_device_body_adds_the_user_agent() {
+        let info = ClientInfo::for_desktop("device-uuid");
+
+        assert_eq!(
+            info.sso_complete_device_body(),
+            json!({
+                "uuid": "device-uuid",
+                "clientName": format!("1Password for {}", PLATFORM.os),
+                "clientVersion": "81210036",
+                "osName": PLATFORM.os_name,
+                "osVersion": "",
+                "name": "Bitwarden",
+                "model": env!("CARGO_PKG_VERSION"),
+                "userAgent": info.user_agent,
+            })
+        );
+    }
+
+    #[test]
+    fn password_device_body_keeps_its_fields() {
+        let info = ClientInfo::for_desktop("device-uuid");
+
+        assert_eq!(
+            info.device_body(),
+            json!({
+                "uuid": "device-uuid",
+                "clientName": format!("1Password for {}", PLATFORM.os),
+                "clientVersion": "81210036",
+                "name": "Bitwarden",
+                "osName": PLATFORM.os_name,
+                "userAgent": info.user_agent,
+            })
+        );
     }
 
     #[tokio::test]

@@ -4,17 +4,21 @@ use zeroize::Zeroizing;
 
 use super::{
     account_key::AccountKey,
-    credentials::Credentials,
+    credentials::{Credentials, SsoCredentials},
     device::ClientInfo,
     error::OnePasswordError,
-    keychain::Keychain,
+    keychain::{Keychain, MASTER_KEY_ID},
     login::{self, LoginOutcome},
     model::{
         DownloadedAccount, Item, ItemCategory, SkippedItem, SkippedReason, SkippedVault, Vault,
     },
-    opdata::Encrypted,
+    opdata::{AesKey, Encrypted},
     rest::RestClient,
     session::Session,
+    sso::{
+        Timing, sso_login,
+        ui::{SecureStorage, SsoUi},
+    },
     two_factor::TwoFactorUi,
     wire::{
         AccountInfo, EncryptedEnvelope, KeysetsInfo, VaultAccess, VaultAttributes, VaultItem,
@@ -52,7 +56,47 @@ impl Client {
         credentials.sign_in_address.normalize()?;
         let account_key = AccountKey::parse(&credentials.account_key)?;
         let session = self.login(&credentials, &account_key, ui).await?;
-        download_vaults(&credentials, &account_key, &session).await
+        download_vaults(
+            MasterKey::Derived {
+                credentials: &credentials,
+                account_key: &account_key,
+            },
+            &session,
+        )
+        .await
+    }
+
+    /// Opens the account by signing in with single sign-on and decrypting every accessible vault.
+    ///
+    /// `ui` takes the user through the identity provider and, on a device the account does not
+    /// trust yet, through its enrollment. `storage` keeps what the device needs to skip the
+    /// enrollment the next time.
+    pub async fn open_account_sso(
+        &self,
+        mut credentials: SsoCredentials,
+        ui: &dyn SsoUi,
+        storage: &dyn SecureStorage,
+    ) -> Result<DownloadedAccount, OnePasswordError> {
+        credentials.validate()?;
+        let client_info = ClientInfo::for_desktop(&credentials.device_uuid);
+        let rest = RestClient::new(
+            self.http.clone(),
+            format!("https://{}/api", credentials.sign_in_address),
+            &client_info.client_id(),
+            &client_info.user_agent,
+            &client_info.op_user_agent,
+        )?;
+
+        let (session, master_key) = sso_login(
+            &credentials,
+            &client_info,
+            ui,
+            storage,
+            &rest,
+            &Timing::default(),
+        )
+        .await?;
+        download_vaults(MasterKey::Known(master_key), &session).await
     }
 
     /// Runs the login sequence, retrying the whole thing when the server rejects a TOTP code.
@@ -101,14 +145,24 @@ impl Client {
     }
 }
 
+/// Where the master key that unlocks the keysets comes from.
+pub(super) enum MasterKey<'a> {
+    /// Derived from the password and Secret Key.
+    Derived {
+        credentials: &'a Credentials,
+        account_key: &'a AccountKey,
+    },
+
+    /// Already known, like the account unlock key an SSO credential bundle carries.
+    Known(Zeroizing<Vec<u8>>),
+}
+
 /// Unlocks the account's keys and downloads every vault the session can open.
 pub(super) async fn download_vaults(
-    credentials: &Credentials,
-    account_key: &AccountKey,
+    master_key: MasterKey<'_>,
     session: &Session,
 ) -> Result<DownloadedAccount, OnePasswordError> {
-    let (keychain, vaults, mut skipped_vaults) =
-        unlock_account(credentials, account_key, session).await?;
+    let (keychain, vaults, mut skipped_vaults) = unlock_account(master_key, session).await?;
 
     let mut downloaded = Vec::with_capacity(vaults.len());
     for info in vaults {
@@ -166,8 +220,7 @@ async fn download_vault(
 
 /// Decrypts the account keysets and every accessible vault key.
 async fn unlock_account(
-    credentials: &Credentials,
-    account_key: &AccountKey,
+    master_key: MasterKey<'_>,
     session: &Session,
 ) -> Result<(Keychain, Vec<VaultInfo>, Vec<SkippedVault>), OnePasswordError> {
     // The vault list, and the keysets that unlock it.
@@ -180,14 +233,25 @@ async fn unlock_account(
         .get_encrypted_json(KEYSETS_ENDPOINT, &session.key)
         .await?;
 
-    // Everything else hangs off the master key, which only the credentials can produce.
+    // Everything else hangs off the master key, which the caller either derives or already has.
     let mut keychain = Keychain::new();
-    keychain.decrypt_keysets(
-        &keysets.keysets,
-        &credentials.username,
-        &credentials.password,
-        account_key,
-    )?;
+    match master_key {
+        MasterKey::Derived {
+            credentials,
+            account_key,
+        } => {
+            keychain.decrypt_keysets(
+                &keysets.keysets,
+                &credentials.username,
+                &credentials.password,
+                account_key,
+            )?;
+        }
+        MasterKey::Known(key) => {
+            keychain
+                .decrypt_reachable(&keysets.keysets, AesKey::new(MASTER_KEY_ID, key.to_vec()))?;
+        }
+    }
 
     let mut vaults = Vec::new();
     let mut skipped_vaults = Vec::new();
@@ -379,7 +443,10 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
     use super::{
-        super::opdata::{AesKey, decode64_loose},
+        super::{
+            opdata::{AesKey, decode64_loose},
+            sign_in::{SignInAddress, SignInDomain},
+        },
         *,
     };
 
@@ -654,6 +721,97 @@ mod tests {
             assert!(result.is_err());
             server.verify().await;
         }
+    }
+
+    /// The fake credentials the account fixtures were re-keyed to, see `replay.rs`.
+    fn account_credentials() -> Credentials {
+        Credentials {
+            username: "user@example.com".into(),
+            password: "password".into(),
+            account_key: "A3-ABCDEF-GHJKLM-NPQRS-TVWXY-Z2345-6789A".into(),
+            sign_in_address: SignInAddress {
+                subdomain: "my".into(),
+                domain: SignInDomain::Global,
+            },
+        }
+    }
+
+    /// Serves `body` as a session-encrypted response from `path`, once per unlock run.
+    async fn mock_encrypted(server: &MockServer, path: &str, body: &str) {
+        let envelope = session_key()
+            .encrypt(body.as_bytes(), &[0u8; 12])
+            .expect("encrypts");
+        server
+            .register(
+                Mock::given(matchers::path(path))
+                    .respond_with(
+                        ResponseTemplate::new(200)
+                            .set_body_json(serde_json::to_value(&envelope).expect("serializes")),
+                    )
+                    .expect(2),
+            )
+            .await;
+    }
+
+    /// A known master key unlocks the same vaults a derived one does.
+    #[tokio::test]
+    async fn a_known_master_key_unlocks_the_same_vaults_as_a_derived_one() {
+        let server = MockServer::start().await;
+        mock_encrypted(
+            &server,
+            "/api/v1/account",
+            include_str!("fixtures/account/account-response.json"),
+        )
+        .await;
+        mock_encrypted(
+            &server,
+            "/api/v1/account/keysets",
+            include_str!("fixtures/account/keysets-response.json"),
+        )
+        .await;
+
+        let credentials = account_credentials();
+        let account_key = AccountKey::parse(&credentials.account_key).expect("valid account key");
+        let (derived_keychain, derived_vaults, derived_skipped) = unlock_account(
+            MasterKey::Derived {
+                credentials: &credentials,
+                account_key: &account_key,
+            },
+            &session(&server),
+        )
+        .await
+        .expect("the derived path unlocks the account");
+
+        // Feed the master key the derived path produced back in as a known key.
+        let master_key = Zeroizing::new(
+            derived_keychain
+                .get_aes(MASTER_KEY_ID)
+                .expect("the master key is in the keychain")
+                .key
+                .clone(),
+        );
+        let (_, known_vaults, known_skipped) =
+            unlock_account(MasterKey::Known(master_key), &session(&server))
+                .await
+                .expect("the known path unlocks the account");
+
+        let vaults = |vaults: &[VaultInfo]| {
+            vaults
+                .iter()
+                .map(|vault| (vault.id.clone(), vault.name.clone(), vault.item_count))
+                .collect::<Vec<_>>()
+        };
+        let skipped = |skipped: &[SkippedVault]| {
+            skipped
+                .iter()
+                .map(|vault| (vault.id.clone(), vault.item_count, vault.reason))
+                .collect::<Vec<_>>()
+        };
+
+        assert!(!derived_vaults.is_empty());
+        assert_eq!(vaults(&derived_vaults), vaults(&known_vaults));
+        assert_eq!(skipped(&derived_skipped), skipped(&known_skipped));
+        server.verify().await;
     }
 
     fn access(acl: i32, kid: &str) -> VaultAccess {

@@ -24,12 +24,16 @@ pub enum ImportError {
     OnePasswordTwoFactorRequired,
     #[error("The 1Password two-factor code was rejected or not entered")]
     OnePasswordTwoFactorFailed,
+    #[error("The 1Password sign-in was canceled")]
+    OnePasswordCanceled,
     #[error("This 1Password account uses a sign-in method the importer does not support: {0}")]
     OnePasswordUnsupported(String),
     #[error("Could not reach 1Password: {0}")]
     OnePasswordNetwork(String),
     #[error("The data 1Password returned could not be read")]
     OnePasswordDecryption,
+    #[error("The secure storage of the 1Password sign-in failed: {0}")]
+    OnePasswordSecureStorage(String),
 
     #[error(transparent)]
     NotAuthenticated(#[from] bitwarden_core::NotAuthenticatedError),

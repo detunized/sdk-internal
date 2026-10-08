@@ -2,7 +2,7 @@
 
 use rand::Rng;
 use reqwest::{
-    Method,
+    Method, StatusCode,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
 use serde::de::DeserializeOwned;
@@ -53,6 +53,17 @@ impl RestClient {
         })
     }
 
+    /// Derives a client for another API root. It keeps the transport and the headers, but does not
+    /// sign its requests, as the signer belongs to the receiver.
+    pub(super) fn with_base_url(&self, base_url: impl Into<String>) -> RestClient {
+        RestClient {
+            http: self.http.clone(),
+            base_url: base_url.into(),
+            headers: self.headers.clone(),
+            signer: None,
+        }
+    }
+
     /// Derives a client that adds the session id header.
     pub(super) fn with_session_id(&self, session_id: &str) -> Result<RestClient, OnePasswordError> {
         let mut headers = self.headers.clone();
@@ -86,12 +97,65 @@ impl RestClient {
         self.request_json(Method::POST, endpoint, Some(&body)).await
     }
 
+    /// POSTs a JSON body and parses the JSON response, reporting an empty success body as `None`.
+    ///
+    /// Some endpoints answer 200 with an empty body while the result is not ready yet, which must
+    /// not be mistaken for a parse error.
+    pub(super) async fn post_json_or_empty<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        body: Value,
+    ) -> Result<Option<T>, OnePasswordError> {
+        let text = self.request(Method::POST, endpoint, Some(&body)).await?;
+        if text.trim().is_empty() {
+            return Ok(None);
+        }
+        deserialize(text.as_bytes()).map(Some)
+    }
+
+    /// POSTs a JSON body and parses the JSON response, or returns `None` when the server answers
+    /// with `status`, whatever the body.
+    pub(super) async fn post_json_unless_status<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        body: Value,
+        status: StatusCode,
+    ) -> Result<Option<T>, OnePasswordError> {
+        let (response_status, text) = self.send(Method::POST, endpoint, Some(&body)).await?;
+        if response_status == status {
+            return Ok(None);
+        }
+        check_status(endpoint, response_status, &text)?;
+        deserialize(text.as_bytes()).map(Some)
+    }
+
+    /// PUTs a JSON body and parses the JSON response.
+    pub(super) async fn put_json<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        body: Value,
+    ) -> Result<T, OnePasswordError> {
+        self.request_json(Method::PUT, endpoint, Some(&body)).await
+    }
+
     /// PUTs with no body and parses the JSON response.
     pub(super) async fn put<T: DeserializeOwned>(
         &self,
         endpoint: &str,
     ) -> Result<T, OnePasswordError> {
         self.request_json(Method::PUT, endpoint, None).await
+    }
+
+    /// DELETEs a JSON body. The response carries nothing to parse and errors surface for the
+    /// caller to ignore.
+    pub(super) async fn delete_json(
+        &self,
+        endpoint: &str,
+        body: Value,
+    ) -> Result<(), OnePasswordError> {
+        self.request(Method::DELETE, endpoint, Some(&body))
+            .await
+            .map(|_| ())
     }
 
     /// GETs an opdata envelope, decrypts it, and parses the JSON plaintext.
@@ -111,19 +175,24 @@ impl RestClient {
         params: Value,
         session_key: &AesKey,
     ) -> Result<T, OnePasswordError> {
-        let payload = serde_json::to_vec(&params)
-            .map_err(|_| OnePasswordError::Internal("failed to serialize request".into()))?;
-
-        let mut iv = [0u8; IV_SIZE];
-        bitwarden_random::rng().fill_bytes(&mut iv);
-        let envelope = session_key.encrypt(&payload, &iv)?;
-        let body = serde_json::to_value(&envelope)
-            .map_err(|_| OnePasswordError::Internal("failed to serialize envelope".into()))?;
+        let body = encrypt_params(&params, session_key)?;
 
         let response = self
             .request_json(Method::POST, endpoint, Some(&body))
             .await?;
         decrypt_response(response, session_key)
+    }
+
+    /// Encrypts `params` like `post_encrypted_json`, but parses the response as plain JSON: some
+    /// endpoints answer an encrypted request with an unencrypted body.
+    pub(super) async fn post_encrypted_json_plain<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        params: Value,
+        session_key: &AesKey,
+    ) -> Result<T, OnePasswordError> {
+        let body = encrypt_params(&params, session_key)?;
+        self.request_json(Method::POST, endpoint, Some(&body)).await
     }
 
     /// Sends a request and parses the JSON response.
@@ -143,6 +212,18 @@ impl RestClient {
         endpoint: &str,
         body: Option<&Value>,
     ) -> Result<String, OnePasswordError> {
+        let (status, text) = self.send(method, endpoint, body).await?;
+        check_status(endpoint, status, &text)?;
+        Ok(text)
+    }
+
+    /// Sends a request and returns the status and the body, whatever the status.
+    async fn send(
+        &self,
+        method: Method,
+        endpoint: &str,
+        body: Option<&Value>,
+    ) -> Result<(StatusCode, String), OnePasswordError> {
         let url = format!("{}/{}", self.base_url, endpoint);
 
         let mut builder = self
@@ -166,17 +247,34 @@ impl RestClient {
             .await
             .map_err(|e| OnePasswordError::Network(e.to_string()))?;
 
-        if !status.is_success() {
-            return Err(parse_server_error(text.as_bytes()).unwrap_or_else(|| {
-                OnePasswordError::UnexpectedStatus {
-                    endpoint: endpoint.to_string(),
-                    status: status.as_u16(),
-                }
-            }));
-        }
-
-        Ok(text)
+        Ok((status, text))
     }
+}
+
+/// Turns an error status into the error its body describes.
+fn check_status(endpoint: &str, status: StatusCode, body: &str) -> Result<(), OnePasswordError> {
+    if status.is_success() {
+        return Ok(());
+    }
+
+    Err(
+        parse_server_error(body.as_bytes()).unwrap_or_else(|| OnePasswordError::UnexpectedStatus {
+            endpoint: endpoint.to_string(),
+            status: status.as_u16(),
+        }),
+    )
+}
+
+/// Serializes and encrypts `params` into an opdata request envelope.
+fn encrypt_params(params: &Value, session_key: &AesKey) -> Result<Value, OnePasswordError> {
+    let payload = serde_json::to_vec(params)
+        .map_err(|_| OnePasswordError::Internal("failed to serialize request".into()))?;
+
+    let mut iv = [0u8; IV_SIZE];
+    bitwarden_random::rng().fill_bytes(&mut iv);
+    let envelope = session_key.encrypt(&payload, &iv)?;
+    serde_json::to_value(&envelope)
+        .map_err(|_| OnePasswordError::Internal("failed to serialize envelope".into()))
 }
 
 /// Decrypts an opdata envelope and parses its JSON plaintext.
@@ -241,7 +339,10 @@ mod tests {
     use serde_json::json;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
-    use super::{super::opdata::decode64_loose, *};
+    use super::{
+        super::{opdata::decode64_loose, wire::SuccessStatus},
+        *,
+    };
 
     #[derive(Debug, Deserialize)]
     struct Greeting {
@@ -390,6 +491,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn another_base_url_keeps_the_headers_and_drops_the_signer() {
+        let server = MockServer::start().await;
+        server
+            .register(
+                Mock::given(matchers::path("/sso/api/v2/auth/methods"))
+                    .and(matchers::header(
+                        "x-agilebits-client",
+                        "1Password for Mac/81210036",
+                    ))
+                    .and(matchers::header("x-agilebits-session-id", "SESSION"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"hello": "you"})))
+                    .expect(1),
+            )
+            .await;
+
+        let key = session_key();
+        let signed = client(&server)
+            .with_session_id(&key.id)
+            .expect("valid session id")
+            .with_signer(MacSigner::new(&key));
+        let _: Greeting = signed
+            .with_base_url(format!("http://{}/sso/api", server.address()))
+            .post_json("v2/auth/methods", json!({}))
+            .await
+            .expect("request succeeds");
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests are recorded");
+        assert!(!requests[0].headers.contains_key(MAC_HEADER));
+        server.verify().await;
+    }
+
+    #[tokio::test]
     async fn round_trips_an_encrypted_request() {
         let key = session_key();
         let response_body = {
@@ -451,6 +587,193 @@ mod tests {
             .expect_err("encrypted error is surfaced");
 
         assert!(matches!(error, OnePasswordError::BadCredentials));
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn put_json_sends_the_method_and_body() {
+        let server = MockServer::start().await;
+        server
+            .register(
+                Mock::given(matchers::path("/api/v3/device/enrollments/UUID/cpace/msgb"))
+                    .and(matchers::method("PUT"))
+                    .and(matchers::body_json(
+                        json!({"signInToken": "TOKEN", "msgb": "MSG_B"}),
+                    ))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"hello": "you"})))
+                    .expect(1),
+            )
+            .await;
+
+        let response: Greeting = client(&server)
+            .put_json(
+                "v3/device/enrollments/UUID/cpace/msgb",
+                json!({"signInToken": "TOKEN", "msgb": "MSG_B"}),
+            )
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(response.hello, "you");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn delete_json_sends_the_method_and_body() {
+        let server = MockServer::start().await;
+        server
+            .register(
+                Mock::given(matchers::path("/api/v2/device/enrollments"))
+                    .and(matchers::method("DELETE"))
+                    .and(matchers::body_json(
+                        json!({"enrollmentUuid": "UUID", "signInToken": "TOKEN"}),
+                    ))
+                    // The response body is ignored, empty is fine.
+                    .respond_with(ResponseTemplate::new(200))
+                    .expect(1),
+            )
+            .await;
+
+        client(&server)
+            .delete_json(
+                "v2/device/enrollments",
+                json!({"enrollmentUuid": "UUID", "signInToken": "TOKEN"}),
+            )
+            .await
+            .expect("request succeeds");
+
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn delete_json_surfaces_errors_for_the_caller_to_ignore() {
+        let server = MockServer::start().await;
+        server
+            .register(
+                Mock::given(matchers::path("/api/v2/device/enrollments"))
+                    .respond_with(ResponseTemplate::new(404))
+                    .expect(1),
+            )
+            .await;
+
+        let error = client(&server)
+            .delete_json("v2/device/enrollments", json!({}))
+            .await
+            .expect_err("status error surfaces");
+
+        assert!(matches!(
+            error,
+            OnePasswordError::UnexpectedStatus { ref endpoint, status: 404 }
+                if endpoint == "v2/device/enrollments"
+        ));
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn post_json_or_empty_reports_an_empty_success_body_as_none() {
+        let server = MockServer::start().await;
+        server
+            .register(
+                Mock::given(matchers::path("/api/v3/device/enrollments/UUID/cpace/taga"))
+                    .and(matchers::method("POST"))
+                    .respond_with(ResponseTemplate::new(200))
+                    .expect(1),
+            )
+            .await;
+        server
+            .register(
+                Mock::given(matchers::path(
+                    "/api/v3/device/enrollments/UUID/cpace/taga/ws",
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_string("  "))
+                .expect(1),
+            )
+            .await;
+
+        let rest = client(&server);
+        let empty: Option<Greeting> = rest
+            .post_json_or_empty(
+                "v3/device/enrollments/UUID/cpace/taga",
+                json!({"signInToken": "TOKEN"}),
+            )
+            .await
+            .expect("empty body is not an error");
+        assert!(empty.is_none());
+
+        let whitespace: Option<Greeting> = rest
+            .post_json_or_empty(
+                "v3/device/enrollments/UUID/cpace/taga/ws",
+                json!({"signInToken": "TOKEN"}),
+            )
+            .await
+            .expect("whitespace only body is not an error");
+        assert!(whitespace.is_none());
+
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn post_json_or_empty_parses_a_non_empty_body() {
+        let server = MockServer::start().await;
+        server
+            .register(
+                Mock::given(matchers::path("/api/v3/device/enrollments/UUID/cpace/taga"))
+                    .and(matchers::method("POST"))
+                    .and(matchers::body_json(json!({"signInToken": "TOKEN"})))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"hello": "you"})))
+                    .expect(1),
+            )
+            .await;
+
+        let response: Greeting = client(&server)
+            .post_json_or_empty(
+                "v3/device/enrollments/UUID/cpace/taga",
+                json!({"signInToken": "TOKEN"}),
+            )
+            .await
+            .expect("request succeeds")
+            .expect("the body is not empty");
+
+        assert_eq!(response.hello, "you");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn post_encrypted_json_plain_encrypts_params_and_reads_a_plain_response() {
+        let key = session_key();
+        let server = MockServer::start().await;
+        server
+            .register(
+                Mock::given(matchers::path("/api/v3/user/devicecredentials"))
+                    .and(matchers::method("POST"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"success": 1})))
+                    .expect(1),
+            )
+            .await;
+
+        let response: SuccessStatus = client(&server)
+            .post_encrypted_json_plain(
+                "v3/user/devicecredentials",
+                json!({"keyId": "SESSION", "enrollmentUuid": "UUID"}),
+                &key,
+            )
+            .await
+            .expect("request succeeds");
+        assert_eq!(response.success, 1);
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests are recorded");
+        let envelope: EncryptedEnvelope =
+            serde_json::from_slice(&requests[0].body).expect("request body is an envelope");
+        let plaintext = key
+            .decrypt(&Encrypted::parse(&envelope).expect("envelope parses"))
+            .expect("session key decrypts the request");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&plaintext).expect("plaintext is JSON"),
+            json!({"keyId": "SESSION", "enrollmentUuid": "UUID"})
+        );
+
         server.verify().await;
     }
 }

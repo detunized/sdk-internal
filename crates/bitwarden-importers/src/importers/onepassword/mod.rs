@@ -20,8 +20,10 @@ impl From<OnePasswordError> for ImportError {
             OnePasswordError::InvalidAccountKey(_) => ImportError::OnePasswordInvalidSecretKey,
             OnePasswordError::TwoFactorRequired => ImportError::OnePasswordTwoFactorRequired,
             OnePasswordError::TwoFactorFailed => ImportError::OnePasswordTwoFactorFailed,
+            OnePasswordError::Canceled(_) => ImportError::OnePasswordCanceled,
             OnePasswordError::Unsupported(what) => ImportError::OnePasswordUnsupported(what),
             OnePasswordError::Network(what) => ImportError::OnePasswordNetwork(what),
+            OnePasswordError::SecureStorage(what) => ImportError::OnePasswordSecureStorage(what),
             // A payload that will not decrypt or parse is the same story to a user: the account
             // came back unreadable.
             OnePasswordError::Decryption | OnePasswordError::Parse => {

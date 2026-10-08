@@ -1,8 +1,9 @@
 # 1Password access module
 
 Read access to a 1Password account. Logging in needs the username, master password and Secret Key,
-plus a TOTP passcode when the account has 2FA. Once authenticated it downloads and decrypts every
-accessible vault into a native 1Password model.
+plus a TOTP passcode when the account has 2FA. An SSO account needs the username and a device uuid
+instead, and the user signs in with the identity provider. Once authenticated it downloads and
+decrypts every accessible vault into a native 1Password model.
 
 A Rust port of the OnePassword module in Bitwarden's C# `password-manager-access` library.
 
@@ -13,9 +14,9 @@ each one into a Bitwarden folder. 1P doesn't have folders, only tags.
 ## Notes
 
 - Supports TOTP 2FA only ATM
-- No SSO support
 - No service account support (they are not so good for export/import)
-- One entry point, `Client::open_account`. No vault selection, no random access
+- Two entry points, `Client::open_account` and `Client::open_account_sso`. No vault selection, no
+  random access
 - Added `aes-gcm`, `hkdf`, `crypto-bigint` and `icu_normalizer` to the workspace, will increase the
   wasm size.
 - SRP uses `crypto-bigint` rather than `num-bigint` for the constant-time `modpow`
@@ -27,6 +28,20 @@ each one into a Bitwarden folder. 1P doesn't have folders, only tags.
 - The replay tests run on an account captured into `fixtures/account`, re-keyed to the fake
   credentials in `replay.rs`. After a recapture, run `node scripts/reencrypt.mjs <keysets|account>`
   from `fixtures` on each response, passing the real account's credentials as `--old-*`
+
+## SSO
+
+- A port of `Client.Sso.cs`, never run against a live SSO account. The crypto is pinned by
+  `fixtures/sso-vectors.json`, which `fixtures/scripts/sso-vectors` computes with the C# code, and
+  `sso/flow_tests.rs` runs the whole login against a fake server
+- A device the account does not trust yet is enrolled: the user approves it on an enrolled device
+  and types the verification code shown there, then a CPace exchange (Ristretto255) hands over the
+  credential bundle, the SRP x and the account unlock key
+- The device key that reopens the bundle next time goes through `SecureStorage`, obfuscated with the
+  fixed key the 1Password web app uses. Each user has a record of their own in it, so one storage
+  can serve several accounts. A storage that fails to read or write fails the import. The device
+  uuid has to stay the same between logins, otherwise every login enrolls the device again
+- Added `curve25519-dalek` and `percent-encoding` to the workspace
 
 ## TODO
 
@@ -44,3 +59,8 @@ each one into a Bitwarden folder. 1P doesn't have folders, only tags.
 - The username goes on the wire raw, `v2/auth/methods` and `v3/auth/start` do not get the normalized
   one
 - `OnePasswordError::TwoFactorRequired` is never constructed
+- SSO: `taga` is not verified, like in C#, so the server is trusted to relay an honest device
+- SSO: a second factor asked for after the SSO login fails the import as unsupported
+- SSO: dropping the login future during an enrollment skips `end_enrollment` and the server side
+  cancel; only `SsoEnrollmentContext::cancelled()` cleans up
+- SSO: no UniFFI bindings for the callbacks yet

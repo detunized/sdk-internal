@@ -35,6 +35,16 @@ pub enum OnePasswordError {
     #[error("two-factor authentication failed")]
     TwoFactorFailed,
 
+    /// The user canceled the SSO login or the device enrollment, or denied it on the approving
+    /// device.
+    #[error("canceled: {0}")]
+    Canceled(String),
+
+    /// The secure storage callback failed. The message comes from the storage implementation, which
+    /// must keep stored values out of it.
+    #[error("secure storage failed: {0}")]
+    SecureStorage(String),
+
     /// Decryption of a server payload failed.
     #[error("decryption failed")]
     Decryption,
