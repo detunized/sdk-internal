@@ -4,17 +4,18 @@ use zeroize::Zeroizing;
 
 use super::{
     account_key::AccountKey,
-    credentials::{Credentials, SsoCredentials},
+    credentials::{Credentials, SsoCredentials, require_username},
     device::ClientInfo,
     error::OnePasswordError,
     keychain::{Keychain, MASTER_KEY_ID},
-    login::{self, LoginOutcome},
+    login::{self, LoginOutcome, SignInMethods},
     model::{
         DownloadedAccount, Item, ItemCategory, SkippedItem, SkippedReason, SkippedVault, Vault,
     },
     opdata::{AesKey, Encrypted},
     rest::RestClient,
     session::Session,
+    sign_in::SignInAddress,
     sso::{Timing, sso_login, ui::SsoUi},
     two_factor::TwoFactorUi,
     wire::{
@@ -23,7 +24,6 @@ use super::{
     },
 };
 
-const PASSWORD_SK_METHOD: &str = "PASSWORD+SK";
 const MAX_OTP_ATTEMPTS: u32 = 3;
 const ACCOUNT_INFO_ENDPOINT: &str =
     "v1/account?attrs=billing,counts,groups,invite,me,settings,tier,user-flags,users,vaults";
@@ -40,6 +40,22 @@ impl Client {
     /// SDK that means `bitwarden_api_base::new_http_client()` or the client's own pooled instance.
     pub fn new(http: reqwest::Client) -> Client {
         Client { http }
+    }
+
+    /// Asks the server how the account signs in. It needs only the email, so a UI can find out
+    /// before asking for anything else.
+    pub async fn sign_in_methods(
+        &self,
+        username: &str,
+        mut sign_in_address: SignInAddress,
+    ) -> Result<SignInMethods, OnePasswordError> {
+        require_username(username)?;
+        sign_in_address.normalize()?;
+        let device_uuid = super::device::generate_device_uuid();
+        let rest = self.rest_client(&sign_in_address, &ClientInfo::for_desktop(&device_uuid))?;
+
+        let login_info = login::fetch_auth_methods(username, &rest).await?;
+        Ok(SignInMethods::of(&login_info))
     }
 
     /// Opens the account by signing in and decrypting every accessible vault, driving 2FA through
@@ -75,13 +91,7 @@ impl Client {
         credentials.validate()?;
         let device_uuid = super::device::generate_device_uuid();
         let client_info = ClientInfo::for_desktop(&device_uuid);
-        let rest = RestClient::new(
-            self.http.clone(),
-            format!("https://{}/api", credentials.sign_in_address),
-            &client_info.client_id(),
-            &client_info.user_agent,
-            &client_info.op_user_agent,
-        )?;
+        let rest = self.rest_client(&credentials.sign_in_address, &client_info)?;
 
         let (session, master_key) =
             sso_login(&credentials, &client_info, ui, &rest, &Timing::default()).await?;
@@ -100,21 +110,11 @@ impl Client {
     ) -> Result<Session, OnePasswordError> {
         let device_uuid = super::device::generate_device_uuid();
         let client_info = ClientInfo::for_desktop(&device_uuid);
-        let rest = RestClient::new(
-            self.http.clone(),
-            format!("https://{}/api", credentials.sign_in_address),
-            &client_info.client_id(),
-            &client_info.user_agent,
-            &client_info.op_user_agent,
-        )?;
+        let rest = self.rest_client(&credentials.sign_in_address, &client_info)?;
 
         // Confirm password + Secret Key login is available. This does not change between attempts.
         let login_info = login::fetch_auth_methods(&credentials.username, &rest).await?;
-        if !login_info
-            .auth_methods
-            .iter()
-            .any(|m| m.kind == PASSWORD_SK_METHOD)
-        {
+        if !SignInMethods::of(&login_info).password {
             return Err(OnePasswordError::Unsupported(format!(
                 "no password login method found for account {}",
                 credentials.username
@@ -131,6 +131,20 @@ impl Client {
         }
 
         Err(OnePasswordError::TwoFactorFailed)
+    }
+
+    fn rest_client(
+        &self,
+        sign_in_address: &SignInAddress,
+        client_info: &ClientInfo,
+    ) -> Result<RestClient, OnePasswordError> {
+        RestClient::new(
+            self.http.clone(),
+            format!("https://{sign_in_address}/api"),
+            &client_info.client_id(),
+            &client_info.user_agent,
+            &client_info.op_user_agent,
+        )
     }
 }
 

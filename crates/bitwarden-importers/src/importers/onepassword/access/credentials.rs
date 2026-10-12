@@ -62,13 +62,18 @@ pub struct SsoCredentials {
 impl SsoCredentials {
     /// Rejects a blank username and normalizes the sign-in address.
     pub(super) fn validate(&mut self) -> Result<(), OnePasswordError> {
-        if self.username.trim().is_empty() {
-            return Err(OnePasswordError::Internal(
-                "username (email) is required".into(),
-            ));
-        }
+        require_username(&self.username)?;
         self.sign_in_address.normalize()
     }
+}
+
+pub(super) fn require_username(username: &str) -> Result<(), OnePasswordError> {
+    if username.trim().is_empty() {
+        return Err(OnePasswordError::Internal(
+            "username (email) is required".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -4,8 +4,11 @@ use wasm_bindgen::prelude::*;
 
 use crate::{
     Credentials, ImportError, ImportOptions, ImportSummary, OnePasswordImportSummary,
-    OnePasswordSsoCredentials, OnePasswordSsoUi, OnePasswordTwoFactorUi,
-    import::{import_kdbx, import_onepassword, import_onepassword_sso},
+    OnePasswordSignInMethods, OnePasswordSsoCredentials, OnePasswordSsoUi, OnePasswordTwoFactorUi,
+    SignInAddress,
+    import::{
+        import_kdbx, import_onepassword, import_onepassword_sso, onepassword_sign_in_methods,
+    },
 };
 
 #[allow(missing_docs)]
@@ -34,6 +37,18 @@ impl ImporterClient {
         options: ImportOptions,
     ) -> Result<ImportSummary, ImportError> {
         import_kdbx(&self.client, file, password, key_file, options).await
+    }
+
+    /// Asks 1Password how the account signs in: with the password and Secret Key, with SSO, or
+    /// either. It needs only the email and the sign-in address, so the UI can call it first and
+    /// then ask for the password and Secret Key or start
+    /// [`ImporterClient::import_onepassword_sso`].
+    pub async fn onepassword_sign_in_methods(
+        &self,
+        username: String,
+        sign_in_address: SignInAddress,
+    ) -> Result<OnePasswordSignInMethods, ImportError> {
+        onepassword_sign_in_methods(&self.client, username, sign_in_address).await
     }
 }
 

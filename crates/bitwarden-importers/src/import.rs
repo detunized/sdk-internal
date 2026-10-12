@@ -4,7 +4,8 @@ use bitwarden_core::Client;
 
 use crate::{
     Credentials, ImportError, ImportOptions, ImportSummary, OnePasswordImportSummary,
-    OnePasswordSsoCredentials, OnePasswordSsoUi, OnePasswordTwoFactorUi,
+    OnePasswordSignInMethods, OnePasswordSsoCredentials, OnePasswordSsoUi, OnePasswordTwoFactorUi,
+    SignInAddress,
     importers::{
         self,
         onepassword::{access, convert},
@@ -46,6 +47,17 @@ pub(crate) async fn import_onepassword_sso(
     let onepassword = access_client(client);
     let account = onepassword.open_account_sso(credentials, ui).await?;
     submit_onepassword(client, account, options).await
+}
+
+/// See [crate::ImporterClient::onepassword_sign_in_methods] for more documentation.
+pub(crate) async fn onepassword_sign_in_methods(
+    client: &Client,
+    username: String,
+    sign_in_address: SignInAddress,
+) -> Result<OnePasswordSignInMethods, ImportError> {
+    Ok(access_client(client)
+        .sign_in_methods(&username, sign_in_address)
+        .await?)
 }
 
 /// 1Password is a third-party host, so this goes through the client's external transport rather

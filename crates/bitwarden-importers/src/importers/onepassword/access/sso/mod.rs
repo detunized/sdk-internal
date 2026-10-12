@@ -15,7 +15,7 @@ use super::{
     credentials::SsoCredentials,
     device::ClientInfo,
     error::OnePasswordError,
-    login::{AUTH_COMPLETE_ENDPOINT, AUTH_START_ENDPOINT, fetch_auth_methods},
+    login::{AUTH_COMPLETE_ENDPOINT, AUTH_START_ENDPOINT, SignInMethods, fetch_auth_methods},
     mac::MacSigner,
     opdata::{AesKey, decode64_loose},
     rest::RestClient,
@@ -34,7 +34,6 @@ mod flow_tests;
 mod test_support;
 pub mod ui;
 
-const OIDC_METHOD: &str = "OIDC";
 const SSO_START_ENDPOINT: &str = "v3/auth/sso/oidc/start";
 const SSO_VERIFY_ENDPOINT: &str = "v3/auth/sso/oidc/verify";
 const DEVICE_NOT_ENROLLED: &str = "device_not_enrolled";
@@ -150,11 +149,7 @@ pub(super) fn require_sso(
     login_info: &LoginInfo,
     username: &str,
 ) -> Result<SsoAccount, OnePasswordError> {
-    if !login_info
-        .auth_methods
-        .iter()
-        .any(|method| method.kind == OIDC_METHOD)
-    {
+    if !SignInMethods::of(login_info).sso {
         return Err(OnePasswordError::Unsupported(format!(
             "no SSO login method found for account {username}"
         )));

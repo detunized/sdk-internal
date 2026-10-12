@@ -18,7 +18,8 @@ mod importers;
 pub(crate) use importers::keeper;
 pub use importers::onepassword::access::{
     Credentials, EnrollmentStatus as OnePasswordSsoEnrollmentStatus, SignInAddress, SignInDomain,
-    SsoCredentials as OnePasswordSsoCredentials, SsoEnrollmentContext as OnePasswordSsoEnrollment,
+    SignInMethods as OnePasswordSignInMethods, SsoCredentials as OnePasswordSsoCredentials,
+    SsoEnrollmentContext as OnePasswordSsoEnrollment,
     SsoEnrollmentResult as OnePasswordSsoEnrollmentResult,
     SsoLoginResult as OnePasswordSsoLoginResult, SsoUi as OnePasswordSsoUi,
     TotpResult as OnePasswordTotpResult, TwoFactorUi as OnePasswordTwoFactorUi,

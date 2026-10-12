@@ -15,8 +15,8 @@ each one into a Bitwarden folder. 1P doesn't have folders, only tags.
 
 - Supports TOTP 2FA only ATM
 - No service account support (they are not so good for export/import)
-- Two entry points, `Client::open_account` and `Client::open_account_sso`. No vault selection, no
-  random access
+- Two entry points, `Client::open_account` and `Client::open_account_sso`, and
+  `Client::sign_in_methods` to tell which one an account needs. No vault selection, no random access
 - Added `aes-gcm`, `hkdf`, `crypto-bigint` and `icu_normalizer` to the workspace, will increase the
   wasm size.
 - SRP uses `crypto-bigint` rather than `num-bigint` for the constant-time `modpow`
