@@ -90,7 +90,8 @@ impl ImporterClient {
     /// provider, which `ui` opens for the user. Every import is a new device for the account, so
     /// the user approves it from another 1Password device and types the verification code it
     /// shows, again through `ui`. A sign-in the user gives up on, at the identity provider or
-    /// during the approval, ends with `ImportError::OnePasswordCanceled`.
+    /// during the approval, ends with `ImportError::OnePasswordCanceled`, and one the approving
+    /// device denies with `ImportError::OnePasswordDenied`.
     pub async fn import_onepassword_sso(
         &self,
         credentials: OnePasswordSsoCredentials,

@@ -35,10 +35,13 @@ pub enum OnePasswordError {
     #[error("two-factor authentication failed")]
     TwoFactorFailed,
 
-    /// The user canceled the SSO login or the device enrollment, or denied it on the approving
-    /// device.
-    #[error("canceled: {0}")]
-    Canceled(String),
+    /// The user canceled the SSO login or the device enrollment.
+    #[error("canceled")]
+    Canceled,
+
+    /// The enrolled device denied the new device.
+    #[error("denied")]
+    Denied,
 
     /// Decryption of a server payload failed.
     #[error("decryption failed")]

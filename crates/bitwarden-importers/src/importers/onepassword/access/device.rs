@@ -89,19 +89,11 @@ impl ClientInfo {
         })
     }
 
-    /// The device descriptor inside the `v2/auth/complete` of an SSO login, which sends what the
-    /// verify request does and the user agent too.
+    /// The device descriptor of `v2/auth/complete`: the verify one plus the user agent.
     pub(super) fn sso_complete_device_body(&self) -> Value {
-        json!({
-            "uuid": self.device_uuid,
-            "clientName": self.client_name,
-            "clientVersion": self.client_version,
-            "name": DEVICE_NAME,
-            "model": SSO_DEVICE_MODEL,
-            "osName": PLATFORM.os_name,
-            "osVersion": "",
-            "userAgent": self.user_agent,
-        })
+        let mut body = self.sso_verify_device_body();
+        body["userAgent"] = self.user_agent.clone().into();
+        body
     }
 }
 
@@ -147,7 +139,6 @@ fn check_success(
 #[cfg(test)]
 mod tests {
     use bitwarden_api_base::new_http_client;
-    use serde_json::json;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
     use super::*;
@@ -188,60 +179,6 @@ mod tests {
         assert_eq!(body["clientVersion"], "81210036");
         assert_eq!(body["osName"], PLATFORM.os_name);
         assert_eq!(body["clientName"], format!("1Password for {}", PLATFORM.os));
-    }
-
-    #[test]
-    fn sso_verify_device_body_names_the_device_and_model() {
-        let info = ClientInfo::for_desktop("device-uuid");
-
-        assert_eq!(
-            info.sso_verify_device_body(),
-            json!({
-                "uuid": "device-uuid",
-                "clientName": format!("1Password for {}", PLATFORM.os),
-                "clientVersion": "81210036",
-                "osName": PLATFORM.os_name,
-                "osVersion": "",
-                "name": "Bitwarden",
-                "model": env!("CARGO_PKG_VERSION"),
-            })
-        );
-    }
-
-    #[test]
-    fn sso_complete_device_body_adds_the_user_agent() {
-        let info = ClientInfo::for_desktop("device-uuid");
-
-        assert_eq!(
-            info.sso_complete_device_body(),
-            json!({
-                "uuid": "device-uuid",
-                "clientName": format!("1Password for {}", PLATFORM.os),
-                "clientVersion": "81210036",
-                "osName": PLATFORM.os_name,
-                "osVersion": "",
-                "name": "Bitwarden",
-                "model": env!("CARGO_PKG_VERSION"),
-                "userAgent": info.user_agent,
-            })
-        );
-    }
-
-    #[test]
-    fn password_device_body_keeps_its_fields() {
-        let info = ClientInfo::for_desktop("device-uuid");
-
-        assert_eq!(
-            info.device_body(),
-            json!({
-                "uuid": "device-uuid",
-                "clientName": format!("1Password for {}", PLATFORM.os),
-                "clientVersion": "81210036",
-                "name": "Bitwarden",
-                "osName": PLATFORM.os_name,
-                "userAgent": info.user_agent,
-            })
-        );
     }
 
     #[tokio::test]

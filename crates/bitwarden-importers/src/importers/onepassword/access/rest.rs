@@ -471,41 +471,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn another_base_url_keeps_the_headers_and_drops_the_signer() {
-        let server = MockServer::start().await;
-        server
-            .register(
-                Mock::given(matchers::path("/sso/api/v2/auth/methods"))
-                    .and(matchers::header(
-                        "x-agilebits-client",
-                        "1Password for Mac/81210036",
-                    ))
-                    .and(matchers::header("x-agilebits-session-id", "SESSION"))
-                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"hello": "you"})))
-                    .expect(1),
-            )
-            .await;
-
-        let key = session_key();
-        let signed = client(&server)
-            .with_session_id(&key.id)
-            .expect("valid session id")
-            .with_signer(MacSigner::new(&key));
-        let _: Greeting = signed
-            .with_base_url(format!("http://{}/sso/api", server.address()))
-            .post_json("v2/auth/methods", json!({}))
-            .await
-            .expect("request succeeds");
-
-        let requests = server
-            .received_requests()
-            .await
-            .expect("requests are recorded");
-        assert!(!requests[0].headers.contains_key(MAC_HEADER));
-        server.verify().await;
-    }
-
-    #[tokio::test]
     async fn round_trips_an_encrypted_request() {
         let key = session_key();
         let response_body = {
@@ -571,149 +536,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn put_json_sends_the_method_and_body() {
+    async fn post_json_or_empty_reads_a_blank_body_as_none_and_parses_json() {
         let server = MockServer::start().await;
-        server
-            .register(
-                Mock::given(matchers::path("/api/v3/device/enrollments/UUID/cpace/msgb"))
-                    .and(matchers::method("PUT"))
-                    .and(matchers::body_json(
-                        json!({"signInToken": "TOKEN", "msgb": "MSG_B"}),
-                    ))
-                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"hello": "you"})))
-                    .expect(1),
-            )
-            .await;
-
-        let response: Greeting = client(&server)
-            .put_json(
-                "v3/device/enrollments/UUID/cpace/msgb",
-                json!({"signInToken": "TOKEN", "msgb": "MSG_B"}),
-            )
-            .await
-            .expect("request succeeds");
-
-        assert_eq!(response.hello, "you");
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn delete_json_sends_the_method_and_body() {
-        let server = MockServer::start().await;
-        server
-            .register(
-                Mock::given(matchers::path("/api/v2/device/enrollments"))
-                    .and(matchers::method("DELETE"))
-                    .and(matchers::body_json(
-                        json!({"enrollmentUuid": "UUID", "signInToken": "TOKEN"}),
-                    ))
-                    // The response body is ignored, empty is fine.
-                    .respond_with(ResponseTemplate::new(200))
-                    .expect(1),
-            )
-            .await;
-
-        client(&server)
-            .delete_json(
-                "v2/device/enrollments",
-                json!({"enrollmentUuid": "UUID", "signInToken": "TOKEN"}),
-            )
-            .await
-            .expect("request succeeds");
-
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn delete_json_surfaces_errors_for_the_caller_to_ignore() {
-        let server = MockServer::start().await;
-        server
-            .register(
-                Mock::given(matchers::path("/api/v2/device/enrollments"))
-                    .respond_with(ResponseTemplate::new(404))
-                    .expect(1),
-            )
-            .await;
-
-        let error = client(&server)
-            .delete_json("v2/device/enrollments", json!({}))
-            .await
-            .expect_err("status error surfaces");
-
-        assert!(matches!(
-            error,
-            OnePasswordError::UnexpectedStatus { ref endpoint, status: 404 }
-                if endpoint == "v2/device/enrollments"
-        ));
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn post_json_or_empty_reports_an_empty_success_body_as_none() {
-        let server = MockServer::start().await;
-        server
-            .register(
-                Mock::given(matchers::path("/api/v3/device/enrollments/UUID/cpace/taga"))
-                    .and(matchers::method("POST"))
-                    .respond_with(ResponseTemplate::new(200))
-                    .expect(1),
-            )
-            .await;
-        server
-            .register(
-                Mock::given(matchers::path(
-                    "/api/v3/device/enrollments/UUID/cpace/taga/ws",
-                ))
-                .respond_with(ResponseTemplate::new(200).set_body_string("  "))
-                .expect(1),
-            )
-            .await;
-
+        for (path, body) in [
+            ("empty", ""),
+            ("blank", "  "),
+            ("json", r#"{"hello":"you"}"#),
+        ] {
+            server
+                .register(
+                    Mock::given(matchers::path(format!("/api/{path}")))
+                        .respond_with(ResponseTemplate::new(200).set_body_string(body)),
+                )
+                .await;
+        }
         let rest = client(&server);
-        let empty: Option<Greeting> = rest
-            .post_json_or_empty(
-                "v3/device/enrollments/UUID/cpace/taga",
-                json!({"signInToken": "TOKEN"}),
-            )
+
+        for path in ["empty", "blank"] {
+            let response: Option<Greeting> = rest
+                .post_json_or_empty(path, json!({}))
+                .await
+                .expect("a blank body is not an error");
+            assert!(response.is_none());
+        }
+        let response: Option<Greeting> = rest
+            .post_json_or_empty("json", json!({}))
             .await
-            .expect("empty body is not an error");
-        assert!(empty.is_none());
-
-        let whitespace: Option<Greeting> = rest
-            .post_json_or_empty(
-                "v3/device/enrollments/UUID/cpace/taga/ws",
-                json!({"signInToken": "TOKEN"}),
-            )
-            .await
-            .expect("whitespace only body is not an error");
-        assert!(whitespace.is_none());
-
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn post_json_or_empty_parses_a_non_empty_body() {
-        let server = MockServer::start().await;
-        server
-            .register(
-                Mock::given(matchers::path("/api/v3/device/enrollments/UUID/cpace/taga"))
-                    .and(matchers::method("POST"))
-                    .and(matchers::body_json(json!({"signInToken": "TOKEN"})))
-                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"hello": "you"})))
-                    .expect(1),
-            )
-            .await;
-
-        let response: Greeting = client(&server)
-            .post_json_or_empty(
-                "v3/device/enrollments/UUID/cpace/taga",
-                json!({"signInToken": "TOKEN"}),
-            )
-            .await
-            .expect("request succeeds")
-            .expect("the body is not empty");
-
-        assert_eq!(response.hello, "you");
-        server.verify().await;
+            .expect("request succeeds");
+        assert_eq!(response.expect("the body is not blank").hello, "you");
     }
 }

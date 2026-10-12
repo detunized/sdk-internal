@@ -64,12 +64,8 @@ impl From<OnePasswordError> for Stop {
 impl From<Stop> for OnePasswordError {
     fn from(stop: Stop) -> OnePasswordError {
         match stop {
-            Stop::Canceled => {
-                OnePasswordError::Canceled("device enrollment was canceled by the user".into())
-            }
-            Stop::Denied => OnePasswordError::Canceled(
-                "device enrollment was denied from an existing device".into(),
-            ),
+            Stop::Canceled => OnePasswordError::Canceled,
+            Stop::Denied => OnePasswordError::Denied,
             Stop::Failed(error) => error,
         }
     }
@@ -523,10 +519,7 @@ mod tests {
     }
 
     fn assert_denied(result: Result<CredentialBundle, OnePasswordError>) {
-        assert!(matches!(
-            result.err(),
-            Some(OnePasswordError::Canceled(message)) if message.contains("denied")
-        ));
+        assert!(matches!(result.err(), Some(OnePasswordError::Denied)));
     }
 
     #[tokio::test]
@@ -777,10 +770,7 @@ mod tests {
             .err()
             .expect("the enrollment is canceled");
 
-        assert!(matches!(
-            &error,
-            OnePasswordError::Canceled(message) if message.contains("canceled")
-        ));
+        assert!(matches!(error, OnePasswordError::Canceled));
         assert_eq!(
             script.take_events(),
             [
@@ -806,7 +796,7 @@ mod tests {
             .err()
             .expect("the enrollment is canceled");
 
-        assert!(matches!(error, OnePasswordError::Canceled(_)));
+        assert!(matches!(error, OnePasswordError::Canceled));
         assert_eq!(
             script.take_events(),
             [Event::Ended(SsoEnrollmentResult::Canceled)]
@@ -834,7 +824,7 @@ mod tests {
             .err()
             .expect("the enrollment is canceled");
 
-        assert!(matches!(error, OnePasswordError::Canceled(_)));
+        assert!(matches!(error, OnePasswordError::Canceled));
         assert_eq!(
             script.take_events(),
             [
@@ -862,7 +852,7 @@ mod tests {
             .err()
             .expect("the enrollment is canceled");
 
-        assert!(matches!(error, OnePasswordError::Canceled(_)));
+        assert!(matches!(error, OnePasswordError::Canceled));
         assert_eq!(
             script.take_events().last(),
             Some(&Event::Ended(SsoEnrollmentResult::Canceled))

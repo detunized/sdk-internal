@@ -243,11 +243,7 @@ pub(super) async fn perform_sso_login(
 
     let redirected_to = match ui.perform_sso_login(sso_login_url, &redirect_to).await {
         SsoLoginResult::RedirectedTo(url) => url,
-        SsoLoginResult::Cancel => {
-            return Err(OnePasswordError::Canceled(
-                "SSO login canceled by the user".into(),
-            ));
-        }
+        SsoLoginResult::Cancel => return Err(OnePasswordError::Canceled),
     };
 
     // The URL is not echoed in the errors: it carries the authorization code.
@@ -782,7 +778,7 @@ mod tests {
         let error = perform_sso_login(LOGIN_URL, &ui).await.err();
 
         assert!(
-            matches!(error, Some(OnePasswordError::Canceled(_))),
+            matches!(error, Some(OnePasswordError::Canceled)),
             "unexpected result: {error:?}"
         );
         assert_eq!(ui.calls().len(), 1);

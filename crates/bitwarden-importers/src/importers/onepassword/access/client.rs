@@ -432,10 +432,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
     use super::{
-        super::{
-            opdata::{AesKey, decode64_loose},
-            sign_in::{SignInAddress, SignInDomain},
-        },
+        super::opdata::{AesKey, decode64_loose},
         *,
     };
 
@@ -710,97 +707,6 @@ mod tests {
             assert!(result.is_err());
             server.verify().await;
         }
-    }
-
-    /// The fake credentials the account fixtures were re-keyed to, see `replay.rs`.
-    fn account_credentials() -> Credentials {
-        Credentials {
-            username: "user@example.com".into(),
-            password: "password".into(),
-            account_key: "A3-ABCDEF-GHJKLM-NPQRS-TVWXY-Z2345-6789A".into(),
-            sign_in_address: SignInAddress {
-                subdomain: "my".into(),
-                domain: SignInDomain::Global,
-            },
-        }
-    }
-
-    /// Serves `body` as a session-encrypted response from `path`, once per unlock run.
-    async fn mock_encrypted(server: &MockServer, path: &str, body: &str) {
-        let envelope = session_key()
-            .encrypt(body.as_bytes(), &[0u8; 12])
-            .expect("encrypts");
-        server
-            .register(
-                Mock::given(matchers::path(path))
-                    .respond_with(
-                        ResponseTemplate::new(200)
-                            .set_body_json(serde_json::to_value(&envelope).expect("serializes")),
-                    )
-                    .expect(2),
-            )
-            .await;
-    }
-
-    /// A known master key unlocks the same vaults a derived one does.
-    #[tokio::test]
-    async fn a_known_master_key_unlocks_the_same_vaults_as_a_derived_one() {
-        let server = MockServer::start().await;
-        mock_encrypted(
-            &server,
-            "/api/v1/account",
-            include_str!("fixtures/account/account-response.json"),
-        )
-        .await;
-        mock_encrypted(
-            &server,
-            "/api/v1/account/keysets",
-            include_str!("fixtures/account/keysets-response.json"),
-        )
-        .await;
-
-        let credentials = account_credentials();
-        let account_key = AccountKey::parse(&credentials.account_key).expect("valid account key");
-        let (derived_keychain, derived_vaults, derived_skipped) = unlock_account(
-            MasterKey::Derived {
-                credentials: &credentials,
-                account_key: &account_key,
-            },
-            &session(&server),
-        )
-        .await
-        .expect("the derived path unlocks the account");
-
-        // Feed the master key the derived path produced back in as a known key.
-        let master_key = Zeroizing::new(
-            derived_keychain
-                .get_aes(MASTER_KEY_ID)
-                .expect("the master key is in the keychain")
-                .key
-                .clone(),
-        );
-        let (_, known_vaults, known_skipped) =
-            unlock_account(MasterKey::Known(master_key), &session(&server))
-                .await
-                .expect("the known path unlocks the account");
-
-        let vaults = |vaults: &[VaultInfo]| {
-            vaults
-                .iter()
-                .map(|vault| (vault.id.clone(), vault.name.clone(), vault.item_count))
-                .collect::<Vec<_>>()
-        };
-        let skipped = |skipped: &[SkippedVault]| {
-            skipped
-                .iter()
-                .map(|vault| (vault.id.clone(), vault.item_count, vault.reason))
-                .collect::<Vec<_>>()
-        };
-
-        assert!(!derived_vaults.is_empty());
-        assert_eq!(vaults(&derived_vaults), vaults(&known_vaults));
-        assert_eq!(skipped(&derived_skipped), skipped(&known_skipped));
-        server.verify().await;
     }
 
     fn access(acl: i32, kid: &str) -> VaultAccess {

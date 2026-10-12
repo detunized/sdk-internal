@@ -38,7 +38,7 @@ impl Keychain {
     }
 
     #[cfg(test)]
-    pub(super) fn get_aes(&self, id: &str) -> Option<&AesKey> {
+    fn get_aes(&self, id: &str) -> Option<&AesKey> {
         self.aes.get(id)
     }
 

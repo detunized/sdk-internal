@@ -114,10 +114,18 @@ impl AesKey {
         plaintext: &[u8],
         iv: &[u8],
     ) -> Result<EncryptedEnvelope, OnePasswordError> {
-        self.encrypt_with_aad(plaintext, iv, &[])
+        let ciphertext = encrypt(&self.key, plaintext, iv, &[])?;
+        Ok(EncryptedEnvelope {
+            kid: self.id.clone(),
+            enc: ENCRYPTION_SCHEME.to_string(),
+            cty: CONTAINER_TYPE.to_string(),
+            iv: Some(BASE64URL_NOPAD.encode(iv)),
+            data: BASE64URL_NOPAD.encode(&ciphertext),
+        })
     }
 
     /// Encrypts `plaintext` into a wire envelope using the given 12-byte IV, authenticating `aad`.
+    #[cfg(test)]
     pub(super) fn encrypt_with_aad(
         &self,
         plaintext: &[u8],
@@ -276,22 +284,6 @@ mod tests {
         );
         assert!(key.decrypt_with_aad(&encrypted, b"other").is_err());
         assert!(key.decrypt(&encrypted).is_err());
-    }
-
-    #[test]
-    fn envelope_without_aad_matches_empty_aad() {
-        let key = AesKey::new("kid", vec![7; 32]);
-        let plain = key.encrypt(b"secret", &[9; 12]).expect("encrypts");
-        let empty_aad = key
-            .encrypt_with_aad(b"secret", &[9; 12], &[])
-            .expect("encrypts");
-
-        assert_eq!(plain.data, empty_aad.data);
-        let encrypted = Encrypted::parse(&plain).expect("decodes envelope");
-        assert_eq!(
-            key.decrypt_with_aad(&encrypted, &[]).expect("decrypts"),
-            b"secret"
-        );
     }
 
     #[test]

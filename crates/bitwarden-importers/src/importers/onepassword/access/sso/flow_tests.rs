@@ -233,7 +233,7 @@ async fn giving_up_at_the_identity_provider_cancels_the_login() {
     let error = sign_in(&server, &ui).await.err();
 
     assert!(
-        matches!(&error, Some(OnePasswordError::Canceled(_))),
+        matches!(&error, Some(OnePasswordError::Canceled)),
         "unexpected result: {error:?}"
     );
     assert_eq!(
