@@ -2,7 +2,7 @@
 
 use zeroize::Zeroize;
 
-use super::sign_in::SignInAddress;
+use super::{error::OnePasswordError, sign_in::SignInAddress};
 
 /// The credentials for a password + Secret Key login.
 ///
@@ -38,5 +38,35 @@ impl Zeroize for Credentials {
 impl Drop for Credentials {
     fn drop(&mut self) {
         self.zeroize();
+    }
+}
+
+/// The credentials for a single sign-on login.
+///
+/// Unlike [`Credentials`] there is no secret in here: the identity provider authenticates the
+/// user and the enrolled device supplies the account keys.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    feature = "wasm",
+    derive(serde::Deserialize, tsify::Tsify),
+    tsify(from_wasm_abi)
+)]
+#[derive(Debug, Clone)]
+pub struct SsoCredentials {
+    /// The account's email address.
+    pub username: String,
+    /// Where the account signs in, such as `my.1password.com`.
+    pub sign_in_address: SignInAddress,
+}
+
+impl SsoCredentials {
+    /// Rejects a blank username and normalizes the sign-in address.
+    pub(super) fn validate(&mut self) -> Result<(), OnePasswordError> {
+        if self.username.trim().is_empty() {
+            return Err(OnePasswordError::Internal(
+                "username (email) is required".into(),
+            ));
+        }
+        self.sign_in_address.normalize()
     }
 }

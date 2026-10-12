@@ -15,7 +15,7 @@ use super::{
 
 const AES_SCHEME: &str = "A256GCM";
 const RSA_SCHEMES: [&str; 2] = ["RSA-OAEP", "RSA-OAEP-256"];
-const MASTER_KEY_ID: &str = "mp";
+pub(super) const MASTER_KEY_ID: &str = "mp";
 
 /// A store of AES and RSA keys keyed by their kid.
 #[derive(Default)]
@@ -109,13 +109,17 @@ impl Keychain {
         self.decrypt_reachable(keysets, master_key)
     }
 
-    /// Seeds `root_key` and decrypts everything reachable from it.
-    fn decrypt_reachable(
+    /// Seeds `root_key` and decrypts every keyset reachable from it. SSO seeds the account unlock
+    /// key from its credential bundle. Fails when no keyset is encrypted by the root.
+    pub(super) fn decrypt_reachable(
         &mut self,
         keysets: &[KeysetInfo],
         root_key: AesKey,
     ) -> Result<(), OnePasswordError> {
         let order = decryption_order(keysets, &root_key.id);
+        if order.is_empty() {
+            return Err(master_keyset_not_found());
+        }
         self.add_aes(root_key);
 
         for index in order {
@@ -164,7 +168,7 @@ fn derive_master_key(
         .iter()
         .filter(|k| k.encrypted_by == MASTER_KEY_ID)
         .max_by_key(|k| k.sn)
-        .ok_or_else(|| OnePasswordError::Internal("Master keyset not found".into()))?;
+        .ok_or_else(master_keyset_not_found)?;
 
     let info = &master.enc_sym_key;
     let algorithm = info.alg.as_deref().ok_or_else(|| {
@@ -184,6 +188,10 @@ fn derive_master_key(
     let key = kdf::derive_master_key(algorithm, info.p2c, &salt, username, password, account_key)?;
 
     Ok(AesKey::new(MASTER_KEY_ID, key.to_vec()))
+}
+
+fn master_keyset_not_found() -> OnePasswordError {
+    OnePasswordError::Internal("Master keyset not found".into())
 }
 
 /// Orders keysets so each one comes after the key that encrypts it, starting from `root_id`.

@@ -103,36 +103,45 @@ impl SrpInfo {
     }
 }
 
-/// Runs the SRP exchange and labels the resulting key with the session id.
-pub(super) async fn perform_and_verify(
-    credentials: &Credentials,
-    account_key: &AccountKey,
-    srp_info: &SrpInfo,
+/// Runs the SRP exchange from a precomputed x and labels the key with the session id. The salt only
+/// feeds the verification hash.
+pub(super) async fn perform_and_verify_with_x(
+    srp_x: &[u8],
+    username: &str,
+    key_uuid: &str,
+    salt: &[u8],
     session_id: &str,
     rest: &RestClient,
 ) -> Result<AesKey, OnePasswordError> {
-    let key = perform(
-        &generate_secret_a(),
-        credentials,
-        account_key,
-        srp_info,
-        rest,
-    )
-    .await?;
+    let srp_x = scalar_bytes(srp_x)?;
+
+    let key = perform(&generate_secret_a(), srp_x, username, key_uuid, salt, rest).await?;
     Ok(AesKey::new(session_id, key.to_vec()))
+}
+
+/// The bytes of x without leading zeros, which a big integer serializer may add. x is a SHA-256
+/// scalar, so a value that still does not fit comes from a malformed credential bundle.
+fn scalar_bytes(srp_x: &[u8]) -> Result<&[u8], OnePasswordError> {
+    let leading_zeros = srp_x.iter().take_while(|byte| **byte == 0).count();
+    let significant = &srp_x[leading_zeros..];
+    if significant.len() > SCALAR_BITS as usize / 8 {
+        return Err(OnePasswordError::Internal(
+            "the SRP x is longer than 32 bytes".into(),
+        ));
+    }
+
+    Ok(significant)
 }
 
 /// The exchange itself, with `secret_a` taken as an argument so tests can pin it.
 async fn perform(
     secret_a: &BoxedUint,
-    credentials: &Credentials,
-    account_key: &AccountKey,
-    srp_info: &SrpInfo,
+    srp_x: &[u8],
+    username: &str,
+    key_uuid: &str,
+    salt: &[u8],
     rest: &RestClient,
 ) -> Result<[u8; 32], OnePasswordError> {
-    // The password and the Secret Key stretched into the SRP private value.
-    let srp_x = compute_x(credentials, account_key, srp_info)?;
-
     // Trade our public ephemeral for the server's.
     let shared_a = compute_shared_a(secret_a);
     let shared_b = exchange_a_for_b(&shared_a, rest).await?;
@@ -141,14 +150,14 @@ async fn perform(
     validate_b(&shared_b)?;
 
     // Both sides reach the same key without the password ever crossing the wire.
-    let session_key = compute_key(secret_a, &shared_a, &shared_b, &srp_x);
+    let session_key = compute_key(secret_a, &shared_a, &shared_b, srp_x);
 
     // Prove to the server that we hold it.
     verify_key(
         &session_key,
-        &credentials.username,
-        &account_key.uuid,
-        srp_info.salt(),
+        username,
+        key_uuid,
+        salt,
         &shared_a,
         &shared_b,
         rest,
@@ -377,7 +386,7 @@ fn calculate_client_hash(
 }
 
 /// Derives SRP `x`, which proves we know the password without sending it.
-fn compute_x(
+pub(super) fn compute_x(
     credentials: &Credentials,
     account_key: &AccountKey,
     srp_info: &SrpInfo,

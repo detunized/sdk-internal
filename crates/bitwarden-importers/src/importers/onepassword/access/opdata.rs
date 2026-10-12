@@ -8,7 +8,7 @@ use aes_gcm::{
     aead::{Aead, Nonce, Payload},
 };
 use data_encoding::BASE64URL_NOPAD;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use super::{error::OnePasswordError, wire::EncryptedEnvelope};
 
@@ -126,6 +126,15 @@ impl AesKey {
 
     /// Decrypts an envelope encrypted for this key, with empty associated data.
     pub(super) fn decrypt(&self, encrypted: &Encrypted) -> Result<Vec<u8>, OnePasswordError> {
+        self.decrypt_with_aad(encrypted, &[])
+    }
+
+    /// Decrypts an envelope encrypted for this key, verifying `aad`.
+    pub(super) fn decrypt_with_aad(
+        &self,
+        encrypted: &Encrypted,
+        aad: &[u8],
+    ) -> Result<Vec<u8>, OnePasswordError> {
         if encrypted.key_id != self.id {
             return Err(OnePasswordError::Internal("mismatching key id".into()));
         }
@@ -135,21 +144,21 @@ impl AesKey {
                 encrypted.scheme
             )));
         }
-        decrypt(&self.key, &encrypted.ciphertext, &encrypted.iv, &[])
+        decrypt(&self.key, &encrypted.ciphertext, &encrypted.iv, aad)
     }
 }
 
 /// Decodes URL-safe, standard, or mixed base64 with or without padding.
 pub(super) fn decode64_loose(s: &str) -> Result<Vec<u8>, OnePasswordError> {
-    let normalized: String = s
-        .trim_end_matches('=')
-        .chars()
-        .map(|c| match c {
-            '-' => '+',
-            '_' => '/',
-            other => other,
-        })
-        .collect();
+    // Wiped because the input is often key material. Sized up front so growing never leaves a copy
+    // behind.
+    let unpadded = s.trim_end_matches('=');
+    let mut normalized = Zeroizing::new(String::with_capacity(unpadded.len()));
+    normalized.extend(unpadded.chars().map(|c| match c {
+        '-' => '+',
+        '_' => '/',
+        other => other,
+    }));
     data_encoding::BASE64_NOPAD
         .decode(normalized.as_bytes())
         .map_err(|_| OnePasswordError::Parse)
